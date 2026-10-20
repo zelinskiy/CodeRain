@@ -4,6 +4,16 @@
 #include <stdlib.h>
 #include <wchar.h>
 
+#define STREAM_COUNT 32
+#define MAX_STREAM_ROWS 2048
+
+typedef struct {
+    int column;
+    int head_row;
+    int length;
+    wchar_t chars[MAX_STREAM_ROWS];
+} Stream;
+
 static const wchar_t  CLASS_NAME[] = L"MatrixScreensaverWindow";
 static const wchar_t MATRIX_CHARS[] =
     L"アイウエオカキクケコサシスセソ"
@@ -11,7 +21,26 @@ static const wchar_t MATRIX_CHARS[] =
     L"マミムメモヤユヨラリルレロワン"
     L"012345789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+static Stream streams[STREAM_COUNT];
+static int stream_cell_width = 0;
+static int stream_cell_height = 0;
+static int streams_initialized = 0;
+
 // static const COLORREF BACKGROUND_COLOR = RGB(0, 0, 0);
+
+static void SpawnStream(Stream *stream, int columns, int rows)
+{
+    const int char_count =
+        (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+
+    stream->column = rand() % columns;
+    stream->head_row = rand() % rows;
+    stream->length = 8 + rand() % 13;
+
+    for (int row = 0; row <= stream->head_row; ++row) {
+        stream->chars[row] = MATRIX_CHARS[rand() % char_count];
+    }
+}
 
 static LRESULT CALLBACK WindowProc(
     HWND hwnd,
@@ -20,10 +49,62 @@ static LRESULT CALLBACK WindowProc(
     LPARAM lParam)
 {
     switch (uMsg)
-    {      
+    {
+        case WM_CREATE:
+        {
+            if (SetTimer(hwnd, 1, 100, NULL) == 0) {
+                return -1;
+            }
+            return 0; 
+        }       
+        case WM_TIMER:
+        {
+            RECT client_rect;
+            GetClientRect(hwnd, &client_rect);
+
+            if (stream_cell_width <= 0 || stream_cell_height <= 0) {
+                return 0;
+            }
+
+            int columns = client_rect.right / stream_cell_width;
+            int rows = client_rect.bottom / stream_cell_height;
+
+            if (columns < 1) columns = 1;
+            if (rows < 1) rows = 1;
+
+            if (columns > MAX_STREAM_ROWS) columns = MAX_STREAM_ROWS;
+            if (rows > MAX_STREAM_ROWS) rows = MAX_STREAM_ROWS;
+
+            const int char_count =
+                (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+
+            for (int i = 0; i < STREAM_COUNT; ++i) {
+                Stream *stream = &streams[i];
+
+                ++stream->head_row;
+
+                if (stream->head_row >= rows) {
+                    SpawnStream(stream, columns, rows);
+                    stream->head_row = 0;
+                } else {
+                    stream->chars[stream->head_row] =
+                        MATRIX_CHARS[rand() % char_count];
+                }
+
+                if (stream->column >= columns) {
+                    stream->column = columns - 1;
+                }
+            }
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         case WM_PAINT:
+        {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
+
+            RECT client_rect;
+            GetClientRect(hwnd, &client_rect);
 
             HFONT font = CreateFontW(
                 -24,
@@ -57,6 +138,28 @@ static LRESULT CALLBACK WindowProc(
             const int cell_width = tm.tmAveCharWidth;
             const int cell_height = tm.tmHeight - tm.tmExternalLeading 
                 - tm.tmInternalLeading - tm.tmDescent;
+            
+            stream_cell_width = cell_width;
+            stream_cell_height = cell_height;
+
+            int columns = client_rect.right / cell_width;
+            int rows = client_rect.bottom / cell_height;
+
+            if (columns < 1) columns = 1;
+            if (rows < 1) rows = 1;
+
+            if (columns > MAX_STREAM_ROWS) columns = MAX_STREAM_ROWS;
+            if (rows > MAX_STREAM_ROWS) rows = MAX_STREAM_ROWS;
+
+            if (!streams_initialized) {
+                for (int i = 0; i < STREAM_COUNT; ++i) {
+                    SpawnStream(&streams[i], columns, rows);
+                }
+
+                streams_initialized = 1;
+            }
+            
+
             FillRect(
                 hdc,
                 &ps.rcPaint,
@@ -68,37 +171,43 @@ static LRESULT CALLBACK WindowProc(
             RECT client;
             GetClientRect(hwnd, &client);
             
-            const int columns = (client.right + cell_width - 1) / cell_width;
-            const int rows = (client.bottom + cell_height - 1) / cell_height;
+            for (int i = 0; i < STREAM_COUNT; ++i) {
+                const Stream *stream = &streams[i];
 
-            const size_t char_count =
-                (sizeof MATRIX_CHARS / sizeof MATRIX_CHARS[0]) - 1;
+                int first_row = stream->head_row - stream->length + 1;
 
-            for (int col = 0; col < columns; ++col)
-            {
-                for (int row = 0; row < rows; ++row)
-                {
-                    const size_t index = (size_t)rand() % char_count;
-                    const wchar_t ch = MATRIX_CHARS[index];
+                if (first_row < 0) {
+                    first_row = 0;
+                }
+
+                for (int row = first_row; row <= stream->head_row; ++row) {
+                    const int distance = stream->head_row - row;
+                    const int green = 255 - distance * 200 / stream->length;
+
+                    SetTextColor(hdc, RGB(0, green, 0));
 
                     TextOutW(
                         hdc,
-                        col * cell_width,
+                        stream->column * cell_width,
                         row * cell_height,
-                        &ch,
-                        1);
+                        &stream->chars[row],
+                        1
+                    );
                 }
             }
 
-            // SelectObject(hdc, old_font);
-            // DeleteObject(font);
+            SelectObject(hdc, old_font);
+            DeleteObject(font);
 
             EndPaint(hwnd, &ps);
             return 0;
+        }
         case WM_DESTROY:
+        {
+            KillTimer(hwnd, 1);
             PostQuitMessage(0);
             return 0;
-
+        }
         default:
             return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
