@@ -6,6 +6,8 @@ A minimal Matrix-style screensaver for Windows 11.
 - Split into separate procedures
 - rotators (single characters which change every tick)
 - various modes: 100% filled screen, console, ...
+- User-defined: charset, font, cell_width, cell_height, etc.
+- User-defined source of streams: books, quotes, etc.
 
 ## Tech stack
 

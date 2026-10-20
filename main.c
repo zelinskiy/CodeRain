@@ -4,21 +4,29 @@
 #include <stdlib.h>
 #include <wchar.h>
 
-#define STREAM_COUNT 10
+#define STREAM_COUNT 300
+#define STREAM_SPEED 300
 #define MAX_STREAM_ROWS 2048
 
 typedef struct {
+    int active;
+    int spawn_delay;
     int column;
     int head_row;
     int length;
+    int visible_length;
     wchar_t chars[MAX_STREAM_ROWS];
 } Stream;
 
 static const wchar_t  CLASS_NAME[] = L"MatrixScreensaverWindow";
-static const wchar_t MATRIX_CHARS[] =
-    L"アイウエオカキクケコサシスセソ"
-    L"タチツテトナニヌネノハヒフヘホ"
-    L"マミムメモヤユヨラリルレロワン";
+// static const wchar_t MATRIX_CHARS[] =
+//     L"アイウエオカキクケコサシスセソ"
+//     L"タチツテトナニヌネノハヒフヘホ"
+//     L"マミムメモヤユヨラリルレロワン";
+
+// static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
+static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+
 
 static Stream streams[STREAM_COUNT];
 static int stream_cell_width = 0;
@@ -97,19 +105,80 @@ static BOOL EnsureBackbuffer(HDC reference_dc, int width, int height)
 }
 
 
-static void SpawnStream(Stream *stream, int columns, int rows)
+
+
+static BOOL SpawnStream(Stream *stream, int columns, int rows)
 {
+    if (columns <= 0 || rows <= 0) {
+        return FALSE;
+    }
+
     const int char_count =
         (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
 
-    stream->column = rand() % columns;
-    stream->head_row = rand() % rows;
-    stream->length = 8 + rand() % 13;
+    /* Try several random positions before giving up. */
+    for (int attempt = 0; attempt < columns * 4; ++attempt) {
+        const int column = rand() % columns;
+        const int length = 8 + rand() % 13;
+        const int head_row = rand() % rows;
 
-    for (int row = 0; row <= stream->head_row; ++row) {
-        stream->chars[row] = MATRIX_CHARS[rand() % char_count];
+        int first_row = head_row - length + 1;
+        if (first_row < 0) {
+            first_row = 0;
+        }
+
+        BOOL occupied = FALSE;
+
+        for (int i = 0; i < STREAM_COUNT; ++i) {
+            const Stream *other = &streams[i];
+
+            if (other == stream || !other->active ||
+                other->column != column) {
+                continue;
+            }
+
+            int other_first = other->head_row - other->length + 1;
+            if (other_first < 0) {
+                other_first = 0;
+            }
+
+            int other_last = other->head_row;
+            if (other_last >= rows) {
+                other_last = rows - 1;
+            }
+
+            if (other_last >= 0 &&
+                first_row <= other_last &&
+                head_row >= other_first) {
+                occupied = TRUE;
+                break;
+            }
+        }
+
+        if (occupied) {
+            continue;
+        }
+
+        stream->column = column;
+        stream->head_row = head_row;
+        stream->length = length;
+        stream->visible_length = 1;
+        stream->active = 1;
+        stream->spawn_delay = 0;
+
+        stream->chars[head_row] = MATRIX_CHARS[rand() % char_count];
+
+        // for (int row = 0; row <= head_row; ++row) {
+        //     stream->chars[row] =
+        //         MATRIX_CHARS[rand() % char_count];
+        // }
+
+        return TRUE;
     }
+
+    return FALSE;
 }
+
 
 static void InvalidateStream(HWND hwnd, const Stream *stream)
 {
@@ -143,7 +212,7 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
-            if (SetTimer(hwnd, 1, 100, NULL) == 0) {
+            if (SetTimer(hwnd, 1, STREAM_SPEED, NULL) == 0) {
                 return -1;
             }
             return 0; 
@@ -169,27 +238,46 @@ static LRESULT CALLBACK WindowProc(
             const int char_count =
                 (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
 
+            
             for (int i = 0; i < STREAM_COUNT; ++i) {
                 Stream *stream = &streams[i];
 
-                // InvalidateStream(hwnd, stream);
+                if (!stream->active) {
+                    if (stream->spawn_delay > 0) {
+                        --stream->spawn_delay;
+                    }
+
+                    if (stream->spawn_delay == 0) {
+                        if (!SpawnStream(stream, columns, rows)) {
+                            /* Retry when a column becomes available. */
+                            stream->spawn_delay = 10;
+                        }
+                    }
+
+                    continue;
+                }
 
                 ++stream->head_row;
 
-                if (stream->head_row >= rows) {
-                    SpawnStream(stream, columns, rows);
-                    stream->head_row = 0;
-                } else {
+                if (stream->head_row < rows &&
+                    stream->head_row < MAX_STREAM_ROWS) {
                     stream->chars[stream->head_row] =
                         MATRIX_CHARS[rand() % char_count];
                 }
 
-                if (stream->column >= columns) {
-                    stream->column = columns - 1;
+                if (stream->visible_length < stream->length) {
+                    ++stream->visible_length;
                 }
 
-                // InvalidateStream(hwnd, stream);
+                if (stream->head_row - stream->length + 1 >= rows) {
+                    stream->active = 0;
+                    stream->spawn_delay = 1 + rand() % 20;
+                }
+
+                stream->chars[stream->head_row] =
+                    MATRIX_CHARS[rand() % char_count];
             }
+
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
@@ -277,13 +365,31 @@ static LRESULT CALLBACK WindowProc(
             if (columns > MAX_STREAM_ROWS) columns = MAX_STREAM_ROWS;
             if (rows > MAX_STREAM_ROWS) rows = MAX_STREAM_ROWS;
 
+            
             if (!streams_initialized) {
-                for (int i = 0; i < STREAM_COUNT; ++i) {
-                    SpawnStream(&streams[i], columns, rows);
+                int initial_count = STREAM_COUNT;
+
+                if (initial_count > columns) {
+                    initial_count = columns;
+                }
+
+                /* Start the first group immediately. */
+                for (int i = 0; i < initial_count; ++i) {
+                    if (!SpawnStream(&streams[i], columns, rows)) {
+                        streams[i].active = 0;
+                        streams[i].spawn_delay = 1 + rand() % 20;
+                    }
+                }
+
+                /* Schedule the remaining streams for later. */
+                for (int i = initial_count; i < STREAM_COUNT; ++i) {
+                    streams[i].active = 0;
+                    streams[i].spawn_delay = 10 + rand() % 41;
                 }
 
                 streams_initialized = 1;
             }
+
                         
             
             SetBkMode(draw_dc, TRANSPARENT);
@@ -294,6 +400,10 @@ static LRESULT CALLBACK WindowProc(
             for (int i = 0; i < STREAM_COUNT; ++i) {
                 const Stream *stream = &streams[i];
 
+                if (!stream->active) {
+                    continue;
+                }
+
                 const int stream_x = stream->column * cell_width;
 
                 if (stream_x >= ps.rcPaint.right ||
@@ -301,7 +411,9 @@ static LRESULT CALLBACK WindowProc(
                     continue;
                 }
 
-                int first_row = stream->head_row - stream->length + 1;
+                int first_row = 
+                    stream->head_row - stream->visible_length + 1;
+
                 if (first_row < 0) {
                     first_row = 0;
                 }
@@ -325,7 +437,7 @@ static LRESULT CALLBACK WindowProc(
                 for (int row = first_row; row <= last_row; ++row) {
                     const int distance = stream->head_row - row;
                     const int green =
-                        255 - distance * 200 / stream->length;
+                        255 - distance * 200 / stream->visible_length;
 
                     SetTextColor(draw_dc, RGB(0, green, 0));
 
