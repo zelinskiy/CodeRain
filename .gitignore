@@ -1,0 +1,20 @@
+# MSVC build artifacts
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.pch
+*.idb
+*.sdf
+*.opensdf
+
+# Visual Studio user-specific files
+.vs/
+*.user
+*.suo
+
+# Generated screensaver
+*.scr
