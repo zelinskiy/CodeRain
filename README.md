@@ -2,6 +2,11 @@
 
 A minimal Matrix-style screensaver for Windows 11.
 
+## TODO
+- Split into separate procedures
+- rotators (single characters which change every tick)
+- various modes: 100% filled screen, console, ...
+
 ## Tech stack
 
 - C17
