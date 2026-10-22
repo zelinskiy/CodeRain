@@ -59,20 +59,6 @@ static FILE *OpenTextFile(const wchar_t *filename)
         return fp;
     }
 
-    /* Fallback: look in the same directory as the executable. */
-    // wchar_t exe_path[MAX_PATH];
-    // if (GetModuleFileNameW(NULL, exe_path, MAX_PATH) > 0) {
-    //     wchar_t *last_slash = wcsrchr(exe_path, L'\\');
-    //     if (last_slash != NULL) {
-    //         *(last_slash + 1) = L'\0';
-    //         wchar_t full_path[MAX_PATH];
-    //         swprintf_s(full_path, MAX_PATH, L"%s%s", exe_path, filename);
-    //         if (_wfopen_s(&fp, full_path, L"rb") == 0 && fp != NULL) {
-    //             return fp;
-    //         }
-    //     }
-    // }
-
     return NULL;
 }
 
