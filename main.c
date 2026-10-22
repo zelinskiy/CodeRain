@@ -5,8 +5,15 @@
 #include <wchar.h>
 
 #define STREAM_COUNT 300
-#define STREAM_SPEED 300
+#define STREAM_SPEED 100        // Less is faster
 #define MAX_STREAM_ROWS 2048
+
+// Build:
+// cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
+
+// Run:
+// main.exe
+
 
 typedef struct {
     int active;
