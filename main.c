@@ -1,19 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
 
 #define STREAM_COUNT 300
-#define STREAM_SPEED 100        // Less is faster
+#define STREAM_SPEED 100
 #define MAX_STREAM_ROWS 2048
-
-// Build:
-// cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
-
-// Run:
-// main.exe
-
+#define MIN_TAIL_LENGTH 8
+#define MAX_TAIL_LENGTH 20
 
 typedef struct {
     int active;
@@ -25,7 +21,10 @@ typedef struct {
     wchar_t chars[MAX_STREAM_ROWS];
 } Stream;
 
-static const wchar_t  CLASS_NAME[] = L"MatrixScreensaverWindow";
+static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
+// static const wchar_t TEXT_SOURCE_FILE[] = L"latin.txt";
+static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
+
 // static const wchar_t MATRIX_CHARS[] =
 //     L"アイウエオカキクケコサシスセソ"
 //     L"タチツテトナニヌネノハヒフヘホ"
@@ -43,12 +42,116 @@ static int streams_initialized = 0;
 // Font resource
 static HFONT stream_font = NULL;
 
+// Text source file stream
+static FILE *text_source_file = NULL;
+
 // Backbuffer
 static HDC backbuffer_dc = NULL;
 static HBITMAP backbuffer_bitmap = NULL;
 static HBITMAP backbuffer_old_bitmap = NULL;
 static int backbuffer_width = 0;
 static int backbuffer_height = 0;
+
+static FILE *OpenTextFile(const wchar_t *filename)
+{
+    FILE *fp = NULL;
+    if (_wfopen_s(&fp, filename, L"rb") == 0 && fp != NULL) {
+        return fp;
+    }
+
+    /* Fallback: look in the same directory as the executable. */
+    // wchar_t exe_path[MAX_PATH];
+    // if (GetModuleFileNameW(NULL, exe_path, MAX_PATH) > 0) {
+    //     wchar_t *last_slash = wcsrchr(exe_path, L'\\');
+    //     if (last_slash != NULL) {
+    //         *(last_slash + 1) = L'\0';
+    //         wchar_t full_path[MAX_PATH];
+    //         swprintf_s(full_path, MAX_PATH, L"%s%s", exe_path, filename);
+    //         if (_wfopen_s(&fp, full_path, L"rb") == 0 && fp != NULL) {
+    //             return fp;
+    //         }
+    //     }
+    // }
+
+    return NULL;
+}
+
+static BOOL InitTextSource(const wchar_t *filename)
+{
+    text_source_file = OpenTextFile(filename);
+    return text_source_file != NULL;
+}
+
+static void CleanupTextSource(void)
+{
+    if (text_source_file != NULL) {
+        fclose(text_source_file);
+        text_source_file = NULL;
+    }
+}
+
+static BOOL GetNextChar(FILE *fp, wchar_t *out_char)
+{
+    if (fp == NULL || out_char == NULL) {
+        return FALSE;
+    }
+
+    int b1 = fgetc(fp);
+    if (b1 == EOF) {
+        rewind(fp);
+        b1 = fgetc(fp);
+        // Prevent from dumb looping in an empty file
+        if (b1 == EOF) {
+            return FALSE;
+        }
+    }
+
+    wchar_t ch;
+    if ((b1 & 0x80) == 0) {
+        // 1-byte ASCII
+        ch = (wchar_t)b1;
+    } else if ((b1 & 0xE0) == 0xC0) {
+        // 2-byte UTF-8 sequence
+        int b2 = fgetc(fp);
+        if (b2 == EOF) { rewind(fp); b2 = fgetc(fp); }
+        ch = (wchar_t)(((b1 & 0x1F) << 6) | (b2 & 0x3F));
+    } else if ((b1 & 0xF0) == 0xE0) {
+        // 3-byte UTF-8 sequence
+        int b2 = fgetc(fp);
+        if (b2 == EOF) { rewind(fp); b2 = fgetc(fp); }
+        int b3 = fgetc(fp);
+        if (b3 == EOF) { rewind(fp); b3 = fgetc(fp); }
+        ch = (wchar_t)(((b1 & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F));
+    } else {
+        ch = (wchar_t)b1;
+    }
+
+    // Skip UTF-8 BOM
+    if (ch == 0xFEFF) {
+        return GetNextChar(fp, out_char);
+    }
+
+    *out_char = ch;
+    return TRUE;
+}
+
+static size_t ReadTextChars(wchar_t *dest, size_t count)
+{
+    if (text_source_file == NULL || count == 0) {
+        return 0;
+    }
+
+    size_t total_read = 0;
+    while (total_read < count) {
+        wchar_t ch;
+        if (!GetNextChar(text_source_file, &ch)) {
+            break;
+        }
+        dest[total_read++] = ch;
+    }
+
+    return total_read;
+}
 
 static void CleanupBackbuffer(void)
 {
@@ -202,6 +305,40 @@ static void GetGridDimensions(HWND hwnd, int *out_columns, int *out_rows)
     *out_rows = rows;
 }
 
+static BOOL CheckOccupied(Stream *stream, int column, int rows, int head_row, int length)
+{
+    int first_row = head_row - length + 1;
+    if (first_row < 0) {
+        first_row = 0;
+    }
+
+    for (int i = 0; i < STREAM_COUNT; ++i) {
+        const Stream *other = &streams[i];
+
+        if (other == stream || !other->active ||
+            other->column != column) {
+            continue;
+        }
+
+        int other_first = other->head_row - other->length + 1;
+        if (other_first < 0) {
+            other_first = 0;
+        }
+
+        int other_last = other->head_row;
+        if (other_last >= rows) {
+            other_last = rows - 1;
+        }
+
+        if (other_last >= 0 &&
+            first_row <= other_last &&
+            head_row >= other_first) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static BOOL SpawnStream(Stream *stream, int columns, int rows)
 {
     if (columns <= 0 || rows <= 0) {
@@ -211,46 +348,13 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
     const int char_count =
         (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
 
-    /* Try several random positions before giving up. */
+    // Try several random positions before giving up.
     for (int attempt = 0; attempt < columns * 4; ++attempt) {
         const int column = rand() % columns;
-        const int length = 8 + rand() % 13;
+        const int length = MIN_TAIL_LENGTH + rand() % (MAX_TAIL_LENGTH - MIN_TAIL_LENGTH);
         const int head_row = rand() % rows;
 
-        int first_row = head_row - length + 1;
-        if (first_row < 0) {
-            first_row = 0;
-        }
-
-        BOOL occupied = FALSE;
-
-        for (int i = 0; i < STREAM_COUNT; ++i) {
-            const Stream *other = &streams[i];
-
-            if (other == stream || !other->active ||
-                other->column != column) {
-                continue;
-            }
-
-            int other_first = other->head_row - other->length + 1;
-            if (other_first < 0) {
-                other_first = 0;
-            }
-
-            int other_last = other->head_row;
-            if (other_last >= rows) {
-                other_last = rows - 1;
-            }
-
-            if (other_last >= 0 &&
-                first_row <= other_last &&
-                head_row >= other_first) {
-                occupied = TRUE;
-                break;
-            }
-        }
-
-        if (occupied) {
+        if (CheckOccupied(stream, column, rows, head_row, length)) {
             continue;
         }
 
@@ -261,12 +365,26 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
         stream->active = 1;
         stream->spawn_delay = 0;
 
-        stream->chars[head_row] = MATRIX_CHARS[rand() % char_count];
+        memset(stream->chars, 0, sizeof(stream->chars));
 
-        // for (int row = 0; row <= head_row; ++row) {
-        //     stream->chars[row] =
-        //         MATRIX_CHARS[rand() % char_count];
-        // }
+        int needed = rows - head_row;
+        if (needed < 1) needed = 1;
+        if (head_row + needed > MAX_STREAM_ROWS) {
+            needed = MAX_STREAM_ROWS - head_row;
+        }
+
+        if (text_source_file != NULL) {
+            size_t grabbed = ReadTextChars(&stream->chars[head_row], (size_t)needed);
+            if (grabbed < (size_t)needed) {
+                for (size_t k = grabbed; k < (size_t)needed; ++k) {
+                    stream->chars[head_row + k] = MATRIX_CHARS[rand() % char_count];
+                }
+            }
+        } else {
+            for (int r = head_row; r < head_row + needed; ++r) {
+                stream->chars[r] = MATRIX_CHARS[rand() % char_count];
+            }
+        }
 
         return TRUE;
     }
@@ -334,8 +452,14 @@ static void UpdateStreams(int columns, int rows)
 
         if (stream->head_row < rows &&
             stream->head_row < MAX_STREAM_ROWS) {
-            stream->chars[stream->head_row] =
-                MATRIX_CHARS[rand() % char_count];
+            if (stream->chars[stream->head_row] == L'\0') {
+                if (text_source_file != NULL) {
+                    ReadTextChars(&stream->chars[stream->head_row], 1);
+                } else {
+                    stream->chars[stream->head_row] =
+                        MATRIX_CHARS[rand() % char_count];
+                }
+            }
         }
 
         if (stream->visible_length < stream->length) {
@@ -501,12 +625,16 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
+            InitTextSource(TEXT_SOURCE_FILE);
+
             if (!InitFontMetrics(hwnd)) {
+                CleanupTextSource();
                 return -1;
             }
 
             if (SetTimer(hwnd, 1, STREAM_SPEED, NULL) == 0) {
                 CleanupFont();
+                CleanupTextSource();
                 return -1;
             }
             return 0; 
@@ -540,6 +668,7 @@ static LRESULT CALLBACK WindowProc(
             KillTimer(hwnd, 1);
             CleanupBackbuffer();
             CleanupFont();
+            CleanupTextSource();
             PostQuitMessage(0);
             return 0;
         }
