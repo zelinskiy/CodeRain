@@ -5,11 +5,16 @@
 #include <stdlib.h>
 #include <wchar.h>
 
-#define STREAM_COUNT 300
-#define STREAM_SPEED 100
+// Build:
+// cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
+
+#define STREAM_COUNT 20
+#define STREAM_SPEED 400
 #define MAX_STREAM_ROWS 2048
 #define MIN_TAIL_LENGTH 8
 #define MAX_TAIL_LENGTH 20
+#define FONT_SIZE -30
+#define FONT_FAMILY L"Ponomar"
 
 typedef struct {
     int active;
@@ -21,9 +26,11 @@ typedef struct {
     wchar_t chars[MAX_STREAM_ROWS];
 } Stream;
 
+
 static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
 // static const wchar_t TEXT_SOURCE_FILE[] = L"latin.txt";
-static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
+static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
+// static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
 
 // static const wchar_t MATRIX_CHARS[] =
 //     L"アイウエオカキクケコサシスセソ"
@@ -31,7 +38,8 @@ static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
 //     L"マミムメモヤユヨラリルレロワン";
 
 // static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
-static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const wchar_t MATRIX_CHARS[] = L"Гдⷭ҇ь";
+// static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 // static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 
 static Stream streams[STREAM_COUNT];
@@ -210,7 +218,7 @@ static BOOL InitFontMetrics(HWND hwnd)
 {
     if (stream_font == NULL) {
         stream_font = CreateFontW(
-            -24,
+            FONT_SIZE,
             0,
             0,
             0,
@@ -223,7 +231,7 @@ static BOOL InitFontMetrics(HWND hwnd)
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            L"Yu Gothic Mono"
+            FONT_FAMILY
         );
 
         if (stream_font == NULL) {
@@ -248,9 +256,12 @@ static BOOL InitFontMetrics(HWND hwnd)
         return FALSE;
     }
 
-    stream_cell_width = tm.tmAveCharWidth;
-    stream_cell_height = tm.tmHeight - tm.tmExternalLeading 
-        - tm.tmInternalLeading - tm.tmDescent;
+    // stream_cell_width = tm.tmAveCharWidth;
+    // stream_cell_height = tm.tmHeight - tm.tmExternalLeading 
+    //     - tm.tmInternalLeading - tm.tmDescent;
+    
+    stream_cell_width = tm.tmMaxCharWidth;
+    stream_cell_height = tm.tmHeight;
 
     if (stream_cell_width < 1) stream_cell_width = 1;
     if (stream_cell_height < 1) stream_cell_height = 1;
@@ -561,18 +572,63 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
             for (int row = first_row; row <= last_row; ++row) {
                 const int distance = stream->head_row - row;
-                const int green =
+                const int red =
                     255 - distance * 200 / stream->visible_length;
 
-                SetTextColor(draw_dc, RGB(0, green, 0));
+                SetTextColor(draw_dc, RGB(red, 0, 0));
+
+                wchar_t ch1 = stream->chars[row];
 
                 TextOutW(
                     draw_dc,
                     stream_x,
                     row * stream_cell_height,
-                    &stream->chars[row],
+                    &ch1,
                     1
                 );
+
+                int skip_rows = 0;
+
+                // Look 2 chars ahead
+                if(row <= last_row - 2){
+                    wchar_t ch2 = stream->chars[row + 1];
+
+                    int ch1_width = 0;                    
+                    HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
+                    GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
+                    // GetTextMetricsW(hdc, &tm);
+                    SelectObject(hdc, hOldFont);
+                    
+                    if (ch2 == 0x2DED){
+                        SetTextColor(draw_dc, RGB(red, 0, 0));
+                        TextOutW(
+                            draw_dc,
+                            stream_x + ch1_width,
+                            row * stream_cell_height,
+                            &ch2,
+                            1
+                        );
+                        skip_rows++;
+                    }
+
+                    wchar_t ch3 = stream->chars[row + 2];
+                    
+                    if (ch3 == 0x0487){
+                        SetTextColor(draw_dc, RGB(red, 0, 0));
+                        TextOutW(
+                            draw_dc,
+                            stream_x + ch1_width,
+                            row * stream_cell_height,
+                            &ch3,
+                            1
+                        );
+                        skip_rows++;
+                    }
+                    row += skip_rows;
+                }
+                
+
+                
             }
         }
     }
