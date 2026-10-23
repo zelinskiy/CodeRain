@@ -8,10 +8,11 @@
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 
+// To enable debug console
 // #define DEBUG
 
 #define STREAM_COUNT 20
-#define STREAM_SPEED 50
+#define STREAM_SPEED 150
 #define MAX_STREAM_ROWS 2048
 #define MIN_TAIL_LENGTH 15
 #define MAX_TAIL_LENGTH 16
@@ -48,15 +49,37 @@ static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
 static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
 static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
 static const wchar_t DIACRYTICS[] = { 
-    0x0483,     // CYRILLIC TITLO
-    0x0301,     // ACUTE ACCENT
-    0x0486,     // CYRILLIC PSILI PNEUMATA
-    0x0300      // GRAVE ACCENT
+    0x0300,  // COMBINING GRAVE ACCENT
+    0x0301,  // COMBINING ACUTE ACCENT
+    0x0311,  // COMBINING INVERTED BREVE
+    0x033E,  // COMBINING VERTICAL TILDE
+    0x0483,  // COMBINING CYRILLIC TITLO
+    0x0486,  // COMBINING CYRILLIC PSILI PNEUMATA
+    0x2DE3,  // COMBINING CYRILLIC LETTER DE
+    0x2DED,  // COMBINING CYRILLIC LETTER ES
+    0x0487,  // COMBINING CYRILLIC POKRYTIE
 }; 
 static const wchar_t OMIT_SYMBOLS[] = {
     0x003A,     // Colon (:)
     0x002C,     // Comma (,)
     0x002E,     // Full stop (.)
+    0x003B,     // Semicolon (;)
+    0x0021,     // Exclamation mark (!)
+    0x003F,     // Question mark (?)
+    0x2014,     // Em dash (—)
+    0x002D,     // Hyphen-minus (-)
+    0x0028,     // Left parenthesis (()
+    0x0029,     // Right parenthesis ())
+    0x00AB,     // Left-pointing double angle quotation mark («)
+    0x00BB,     // Right-pointing double angle quotation mark (»)
+    0x201C,     // Left double quotation mark (“)
+    0x201D,     // Right double quotation mark (”)
+    0x2018,     // Left single quotation mark (‘)
+    0x2019,     // Right single quotation mark (’)
+    0xA67E,     // CYRILLIC KAVYKA (꙾) -- these actually shall be cleaned up
+    0x005B,     // Left square bracket ([)
+    0x005D,     // Right square bracket (])
+    // 0x2424,  // Newline symbol
 };
 
 
@@ -320,7 +343,7 @@ static BOOL InitFontMetrics(HWND hwnd)
     //     - tm.tmInternalLeading - tm.tmDescent;
     
     stream_cell_width = tm.tmMaxCharWidth;
-    stream_cell_height = tm.tmHeight / 2;
+    stream_cell_height = tm.tmHeight * 0.8;
 
     if (stream_cell_width < 1) stream_cell_width = 1;
     if (stream_cell_height < 1) stream_cell_height = 1;
