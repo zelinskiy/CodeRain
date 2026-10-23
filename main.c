@@ -8,13 +8,16 @@
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 
+// #define DEBUG
+
 #define STREAM_COUNT 20
-#define STREAM_SPEED 400
+#define STREAM_SPEED 50
 #define MAX_STREAM_ROWS 2048
-#define MIN_TAIL_LENGTH 8
-#define MAX_TAIL_LENGTH 20
+#define MIN_TAIL_LENGTH 15
+#define MAX_TAIL_LENGTH 16
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
+
 
 typedef struct {
     int active;
@@ -23,13 +26,18 @@ typedef struct {
     int head_row;
     int length;
     int visible_length;
-    wchar_t chars[MAX_STREAM_ROWS];
+    wchar_t chars[MAX_STREAM_ROWS][3];
 } Stream;
 
 
 static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
+
+// The input file shall start with a whitespace to work correctly
+
+// static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 // static const wchar_t TEXT_SOURCE_FILE[] = L"latin.txt";
-static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
+
+// static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 // static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
 
 // static const wchar_t MATRIX_CHARS[] =
@@ -37,10 +45,20 @@ static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
 //     L"タチツテトナニヌネノハヒフヘホ"
 //     L"マミムメモヤユヨラリルレロワン";
 
-// static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
-static const wchar_t MATRIX_CHARS[] = L"Гдⷭ҇ь";
-// static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-// static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
+static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
+static const wchar_t DIACRYTICS[] = { 
+    0x0483,     // CYRILLIC TITLO
+    0x0301,     // ACUTE ACCENT
+    0x0486,     // CYRILLIC PSILI PNEUMATA
+    0x0300      // GRAVE ACCENT
+}; 
+static const wchar_t OMIT_SYMBOLS[] = {
+    0x003A,     // Colon (:)
+    0x002C,     // Comma (,)
+    0x002E,     // Full stop (.)
+};
+
 
 static Stream streams[STREAM_COUNT];
 static int stream_cell_width = 0;
@@ -129,19 +147,60 @@ static BOOL GetNextChar(FILE *fp, wchar_t *out_char)
     return TRUE;
 }
 
-static size_t ReadTextChars(wchar_t *dest, size_t count)
+static BOOL IsDiacritic(wchar_t ch)
+{
+    for (size_t i = 0; DIACRYTICS[i] != L'\0'; i++) {
+        if (DIACRYTICS[i] == ch) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOL IsOmitSymbol(wchar_t ch)
+{
+    for (size_t i = 0; OMIT_SYMBOLS[i] != L'\0'; i++) {
+        if (OMIT_SYMBOLS[i] == ch) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static size_t ReadTextChars(wchar_t (*dest)[3], size_t count)
 {
     if (text_source_file == NULL || count == 0) {
         return 0;
     }
 
     size_t total_read = 0;
+    wchar_t ch;
+
+    while(ch != L' ') {
+        GetNextChar(text_source_file, &ch);
+    }
+
     while (total_read < count) {
-        wchar_t ch;
         if (!GetNextChar(text_source_file, &ch)) {
             break;
+        } 
+
+        if (IsOmitSymbol(ch)) {
+            continue;
         }
-        dest[total_read++] = ch;
+
+        if (!IsDiacritic(ch)) {
+            dest[total_read][0] = ch;
+            dest[total_read][1] = L'\0';
+            dest[total_read][2] = L'\0';
+            total_read++;
+        } else if (total_read > 0) {
+            if (dest[total_read - 1][1] == L'\0') {
+                dest[total_read - 1][1] = ch;
+            } else if (dest[total_read - 1][2] == L'\0') {
+                dest[total_read - 1][2] = ch;
+            }
+        }
     }
 
     return total_read;
@@ -261,7 +320,7 @@ static BOOL InitFontMetrics(HWND hwnd)
     //     - tm.tmInternalLeading - tm.tmDescent;
     
     stream_cell_width = tm.tmMaxCharWidth;
-    stream_cell_height = tm.tmHeight;
+    stream_cell_height = tm.tmHeight / 2;
 
     if (stream_cell_width < 1) stream_cell_width = 1;
     if (stream_cell_height < 1) stream_cell_height = 1;
@@ -374,12 +433,12 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
             size_t grabbed = ReadTextChars(&stream->chars[head_row], (size_t)needed);
             if (grabbed < (size_t)needed) {
                 for (size_t k = grabbed; k < (size_t)needed; ++k) {
-                    stream->chars[head_row + k] = MATRIX_CHARS[rand() % char_count];
+                    stream->chars[head_row + k][0] = MATRIX_CHARS[rand() % char_count];
                 }
             }
         } else {
             for (int r = head_row; r < head_row + needed; ++r) {
-                stream->chars[r] = MATRIX_CHARS[rand() % char_count];
+                stream->chars[r][0] = MATRIX_CHARS[rand() % char_count];
             }
         }
 
@@ -453,7 +512,7 @@ static void UpdateStreams(int columns, int rows)
                 if (text_source_file != NULL) {
                     ReadTextChars(&stream->chars[stream->head_row], 1);
                 } else {
-                    stream->chars[stream->head_row] =
+                    stream->chars[stream->head_row][0] =
                         MATRIX_CHARS[rand() % char_count];
                 }
             }
@@ -577,7 +636,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
                 SetTextColor(draw_dc, RGB(red, 0, 0));
 
-                wchar_t ch1 = stream->chars[row];
+                wchar_t ch1 = stream->chars[row][0];
 
                 TextOutW(
                     draw_dc,
@@ -587,48 +646,35 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
                     1
                 );
 
-                int skip_rows = 0;
+                // Diacrytics
+                wchar_t ch2 = stream->chars[row][1];
+                wchar_t ch3 = stream->chars[row][2];
 
-                // Look 2 chars ahead
-                if(row <= last_row - 2){
-                    wchar_t ch2 = stream->chars[row + 1];
-
-                    int ch1_width = 0;                    
-                    HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
-                    GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
-                    // GetTextMetricsW(hdc, &tm);
-                    SelectObject(hdc, hOldFont);
-                    
-                    if (ch2 == 0x2DED){
-                        SetTextColor(draw_dc, RGB(red, 0, 0));
-                        TextOutW(
-                            draw_dc,
-                            stream_x + ch1_width,
-                            row * stream_cell_height,
-                            &ch2,
-                            1
-                        );
-                        skip_rows++;
-                    }
-
-                    wchar_t ch3 = stream->chars[row + 2];
-                    
-                    if (ch3 == 0x0487){
-                        SetTextColor(draw_dc, RGB(red, 0, 0));
-                        TextOutW(
-                            draw_dc,
-                            stream_x + ch1_width,
-                            row * stream_cell_height,
-                            &ch3,
-                            1
-                        );
-                        skip_rows++;
-                    }
-                    row += skip_rows;
+                int ch1_width = 0;
+                HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
+                GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
+                SelectObject(hdc, hOldFont);
+                
+                if (ch2 != L'\0'){
+                    SetTextColor(draw_dc, RGB(red, 0, 0));
+                    TextOutW(
+                        draw_dc,
+                        stream_x + ch1_width,
+                        row * stream_cell_height,
+                        &ch2,
+                        1
+                    );
+                }                    
+                if (ch3 != L'\0'){
+                    SetTextColor(draw_dc, RGB(red, 0, 0));
+                    TextOutW(
+                        draw_dc,
+                        stream_x + ch1_width,
+                        row * stream_cell_height,
+                        &ch3,
+                        1
+                    );
                 }
-                
-
-                
             }
         }
     }
@@ -761,7 +807,13 @@ int WINAPI WinMain(
 
     ShowWindow(hwnd, SW_SHOW);
 
-    MSG msg;
+    #ifdef DEBUG
+    AllocConsole();
+    FILE *console;
+    freopen_s(&console, "CONOUT$", "w", stdout);
+    #endif
+
+    MSG msg;    
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
     {
