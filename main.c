@@ -14,26 +14,30 @@
 #define STREAM_COUNT 20
 #define STREAM_SPEED 70
 #define MAX_STREAM_ROWS 2048
-#define MIN_TAIL_LENGTH 30
-#define MAX_TAIL_LENGTH 60
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
 #define VERTICAL_SPACING 3
 #define WHITESPACE_LENGTH 15
+#define HORIZONTAL_STREAM_PADDING 10
 
 typedef struct {
     wchar_t value;
     wchar_t diacrytics1;
     wchar_t diacrytics2;
+    int width;
+    int height;
 } StreamCharacter;
 
 typedef struct {
     int active;
     int spawn_delay;
-    int column;
-    int head_row;
-    int length;
-    int visible_length;
+    int x;
+    int start_y;
+    int head_row;        // Current head character index
+    int first_row;       // Current tail character index
+    int char_count;      // Total characters in this chunk
+    int max_width;       // Max width among characters in this chunk
+    int max_height;      // Total height of all characters in this chunk
     StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
 
@@ -64,6 +68,7 @@ static const wchar_t DIACRYTICS[] = {
     0x2DE3,  // COMBINING CYRILLIC LETTER DE
     0x2DED,  // COMBINING CYRILLIC LETTER ES
     0x0487,  // COMBINING CYRILLIC POKRYTIE
+    L'\0'
 }; 
 static const wchar_t OMIT_SYMBOLS[] = {
     0x003A,     // Colon (:)
@@ -86,12 +91,10 @@ static const wchar_t OMIT_SYMBOLS[] = {
     0x005B,     // Left square bracket ([)
     0x005D,     // Right square bracket (])
     // 0x2424,  // Newline symbol
+    L'\0'
 };
 
-
 static Stream streams[STREAM_COUNT];
-static int stream_cell_width = 0;
-static int stream_cell_height = 0;
 static int streams_initialized = 0;
 
 // Font resource
@@ -107,9 +110,13 @@ static HBITMAP backbuffer_old_bitmap = NULL;
 static int backbuffer_width = 0;
 static int backbuffer_height = 0;
 
-static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch){
+static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
+{
+    GLYPHMETRICS gm = { 0 };
+    if (ch == L'\0' || ch == L' ') {
+        return gm;
+    }
     HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
-    GLYPHMETRICS gm;
     MAT2 mat2 = { 
         {0, 1}, {0, 0},
         {0, 0}, {0, 1},
@@ -119,12 +126,48 @@ static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch){
     return gm;
 }
 
-static int GetCharacterWidth(HDC hdc, wchar_t ch){
+static int GetCharacterWidth(HDC hdc, wchar_t ch)
+{
     int ch_width = 0;
     HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
     GetCharWidth32W(hdc, ch, ch, &ch_width);
     SelectObject(hdc, hOldFont);
     return ch_width;
+}
+
+static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
+{
+    if (sc->value == L' ') {
+        sc->width = GetCharacterWidth(hdc, L' ');
+        if (sc->width < 1) {
+            sc->width = 12;
+        }
+        sc->height = WHITESPACE_LENGTH;
+        return;
+    }
+
+    GLYPHMETRICS ch_gm = GetCharacterDimensions(hdc, sc->value);
+    int ch_w = GetCharacterWidth(hdc, sc->value);
+    int w = max(ch_w, (int)ch_gm.gmBlackBoxX);
+
+    int dia_h = 0;
+    if (sc->diacrytics1 != L'\0' && sc->diacrytics2 != L'\0') {
+        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacrytics1);
+        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacrytics2);
+        dia_h = max((int)d1.gmBlackBoxY, (int)d2.gmBlackBoxY);
+        w = max(w, ch_w + max((int)d1.gmBlackBoxX, (int)d2.gmBlackBoxX));
+    } else if (sc->diacrytics1 != L'\0') {
+        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacrytics1);
+        dia_h = (int)d1.gmBlackBoxY;
+        w = max(w, ch_w + (int)d1.gmBlackBoxX);
+    } else if (sc->diacrytics2 != L'\0') {
+        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacrytics2);
+        dia_h = (int)d2.gmBlackBoxY;
+        w = max(w, ch_w + (int)d2.gmBlackBoxX);
+    }
+
+    sc->width = max(w, 1);
+    sc->height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
 }
 
 static FILE *OpenTextFile(const wchar_t *filename)
@@ -216,23 +259,47 @@ static BOOL IsOmitSymbol(wchar_t ch)
     return FALSE;
 }
 
-static size_t ReadTextChars(StreamCharacter *dest, size_t count)
+static BOOL IsChunkDelimiter(wchar_t ch)
 {
-    if (text_source_file == NULL || count == 0) {
+    return (ch == L';' || ch == L':' || ch == L'.');
+}
+
+static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
+{
+    if (text_source_file == NULL || max_count == 0) {
         return 0;
     }
 
-    size_t total_read = 0;
     wchar_t ch;
 
-    while(ch != L' ') {
-        GetNextChar(text_source_file, &ch);
+    // Skip leading whitespace, newlines, and delimiters from the previous chunk
+    for (;;) {
+        if (!GetNextChar(text_source_file, &ch)) {
+            return 0;
+        }
+        if (ch != L' ' && ch != L'\r' && ch != L'\n' && !IsChunkDelimiter(ch)) {
+            break;
+        }
     }
 
-    while (total_read < count) {
+    size_t total_read = 0;
+    if (!IsOmitSymbol(ch)) {
+        if (!IsDiacritic(ch)) {
+            dest[total_read].value = ch;
+            dest[total_read].diacrytics1 = L'\0';
+            dest[total_read].diacrytics2 = L'\0';
+            total_read++;
+        }
+    }
+
+    while (total_read < max_count) {
         if (!GetNextChar(text_source_file, &ch)) {
             break;
-        } 
+        }
+
+        if (IsChunkDelimiter(ch)) {
+            break;
+        }
 
         if (IsOmitSymbol(ch)) {
             continue;
@@ -250,6 +317,11 @@ static size_t ReadTextChars(StreamCharacter *dest, size_t count)
                 dest[total_read - 1].diacrytics2 = ch;
             }
         }
+    }
+
+    // Trim trailing whitespace if any
+    while (total_read > 0 && dest[total_read - 1].value == L' ') {
+        total_read--;
     }
 
     return total_read;
@@ -360,21 +432,7 @@ static BOOL InitFontMetrics(HWND hwnd)
     }
     ReleaseDC(hwnd, hdc);
 
-    if (!metrics_ok) {
-        return FALSE;
-    }
-
-    // stream_cell_width = tm.tmAveCharWidth;
-    // stream_cell_height = tm.tmHeight - tm.tmExternalLeading 
-    //     - tm.tmInternalLeading - tm.tmDescent;
-    
-    stream_cell_width = tm.tmMaxCharWidth;
-    stream_cell_height = floor(tm.tmHeight * 0.8);
-
-    if (stream_cell_width < 1) stream_cell_width = 1;
-    if (stream_cell_height < 1) stream_cell_height = 1;
-
-    return TRUE;
+    return metrics_ok;
 }
 
 static void CleanupFont(void)
@@ -385,111 +443,125 @@ static void CleanupFont(void)
     }
 }
 
-static void GetGridDimensions(HWND hwnd, int *out_columns, int *out_rows)
+static RECT GetStreamRect(const Stream *stream)
 {
-    RECT client_rect;
-    GetClientRect(hwnd, &client_rect);
-
-    int cols = 1;
-    int rows = 1;
-
-    if (stream_cell_width > 0) {
-        cols = client_rect.right / stream_cell_width;
-    }
-    if (stream_cell_height > 0) {
-        rows = client_rect.bottom / stream_cell_height;
+    RECT r = { 0, 0, 0, 0 };
+    if (!stream->active) {
+        return r;
     }
 
-    if (cols < 1) cols = 1;
-    if (rows < 1) rows = 1;
+    r.left = stream->x;
+    r.right = stream->x + stream->max_width;
 
-    if (cols > MAX_STREAM_ROWS) cols = MAX_STREAM_ROWS;
-    if (rows > MAX_STREAM_ROWS) rows = MAX_STREAM_ROWS;
+    int first_row = stream->first_row;
+    int last_row = stream->head_row;
+    if (last_row >= stream->char_count) {
+        last_row = stream->char_count - 1;
+    }
 
-    *out_columns = cols;
-    *out_rows = rows;
+    if (first_row > last_row) {
+        r.top = stream->start_y;
+        r.bottom = stream->start_y;
+        return r;
+    }
+
+    int y = stream->start_y;
+    for (int i = 0; i < first_row && i < stream->char_count; ++i) {
+        y += stream->chars[i].height;
+    }
+    r.top = y;
+
+    for (int i = first_row; i <= last_row && i < stream->char_count; ++i) {
+        y += stream->chars[i].height;
+    }
+    r.bottom = y;
+
+    return r;
 }
 
-static BOOL CheckOccupied(Stream *stream, int column, int rows, int head_row, int length)
+static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_width)
 {
-    int first_row = head_row - length + 1;
-    if (first_row < 0) {
-        first_row = 0;
-    }
+    int cand_left = cand_x;
+    int cand_right = cand_x + cand_width;
 
     for (int i = 0; i < STREAM_COUNT; ++i) {
         const Stream *other = &streams[i];
-
-        if (other == stream || !other->active ||
-            other->column != column) {
+        if (other == stream || !other->active) {
             continue;
         }
 
-        int other_first = other->head_row - other->length + 1;
-        if (other_first < 0) {
-            other_first = 0;
-        }
-
-        int other_last = other->head_row;
-        if (other_last >= rows) {
-            other_last = rows - 1;
-        }
-
-        if (other_last >= 0 &&
-            first_row <= other_last &&
-            head_row >= other_first) {
+        // Horizontal lane overlap check with padding
+        if (cand_right + HORIZONTAL_STREAM_PADDING > other->x &&
+            other->x + other->max_width + HORIZONTAL_STREAM_PADDING > cand_left) {
             return TRUE;
         }
     }
     return FALSE;
 }
 
-static BOOL SpawnStream(Stream *stream, int columns, int rows)
+static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_height)
 {
-    if (columns <= 0 || rows <= 0) {
+    if (screen_width <= 0 || screen_height <= 0) {
         return FALSE;
     }
 
-    const int char_count =
-        (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+    memset(stream->chars, 0, sizeof(stream->chars));
 
-    // Try several random positions before giving up.
-    for (int attempt = 0; attempt < columns * 4; ++attempt) {
-        const int column = rand() % columns;
-        const int length = MIN_TAIL_LENGTH + rand() % (MAX_TAIL_LENGTH - MIN_TAIL_LENGTH);
-        const int head_row = rand() % rows;
+    size_t grabbed = 0;
+    if (text_source_file != NULL) {
+        grabbed = ReadTextChunk(stream->chars, MAX_STREAM_ROWS);
+    }
 
-        if (CheckOccupied(stream, column, rows, head_row, length)) {
+    if (grabbed == 0) {
+        const int char_count = (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+        grabbed = 25 + rand() % 25;
+        for (size_t k = 0; k < grabbed; ++k) {
+            stream->chars[k].value = MATRIX_CHARS[rand() % char_count];
+            stream->chars[k].diacrytics1 = L'\0';
+            stream->chars[k].diacrytics2 = L'\0';
+        }
+    }
+
+    int accum_h = 0;
+    int max_w = 0;
+
+    for (size_t i = 0; i < grabbed; ++i) {
+        MeasureStreamCharacter(hdc, &stream->chars[i]);
+        accum_h += stream->chars[i].height;
+        if (stream->chars[i].width > max_w) {
+            max_w = stream->chars[i].width;
+        }
+    }
+
+    stream->char_count = (int)grabbed;
+    stream->max_width = max(max_w, 1);
+    stream->max_height = accum_h;
+
+    int max_x = screen_width - stream->max_width;
+    if (max_x < 1) {
+        max_x = 1;
+    }
+
+    int max_y = screen_height - 60;
+    if (max_y < 1) {
+        max_y = 1;
+    }
+
+    // Try several random positions across the screen before giving up
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        const int cand_x = rand() % max_x;
+        const int cand_y = rand() % max_y;
+
+        if (CheckStreamCollision(stream, cand_x, stream->max_width)) {
             continue;
         }
 
-        stream->column = column;
-        stream->head_row = head_row;
-        stream->length = length;
-        stream->visible_length = 1;
+        stream->x = cand_x;
+        stream->start_y = cand_y;
+        stream->head_row = 0;
+        stream->first_row = 0;
         stream->active = 1;
         stream->spawn_delay = 0;
-
-        memset(stream->chars, 0, sizeof(stream->chars));
-
-        int needed = rows - head_row;
-        if (needed < 1) needed = 1;
-        if (head_row + needed > MAX_STREAM_ROWS) {
-            needed = MAX_STREAM_ROWS - head_row;
-        }
-
-        if (text_source_file != NULL) {
-            size_t grabbed = ReadTextChars(&stream->chars[head_row], (size_t)needed);
-            if (grabbed < (size_t)needed) {
-                for (size_t k = grabbed; k < (size_t)needed; ++k) {
-                    stream->chars[head_row + k].value = MATRIX_CHARS[rand() % char_count];
-                }
-            }
-        } else {
-            for (int r = head_row; r < head_row + needed; ++r) {
-                stream->chars[r].value = MATRIX_CHARS[rand() % char_count];
-            }
-        }
 
         return TRUE;
     }
@@ -497,23 +569,17 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
     return FALSE;
 }
 
-static void InitStreams(int columns, int rows)
+static void InitStreams(HDC hdc, int screen_width, int screen_height)
 {
     int initial_count = STREAM_COUNT;
 
-    if (initial_count > columns) {
-        initial_count = columns;
-    }
-
-    /* Start the first group immediately. */
     for (int i = 0; i < initial_count; ++i) {
-        if (!SpawnStream(&streams[i], columns, rows)) {
+        if (!SpawnStream(hdc, &streams[i], screen_width, screen_height)) {
             streams[i].active = 0;
             streams[i].spawn_delay = 1 + rand() % 20;
         }
     }
 
-    /* Schedule the remaining streams for later. */
     for (int i = initial_count; i < STREAM_COUNT; ++i) {
         streams[i].active = 0;
         streams[i].spawn_delay = 10 + rand() % 41;
@@ -522,18 +588,15 @@ static void InitStreams(int columns, int rows)
     streams_initialized = 1;
 }
 
-static void UpdateStreams(int columns, int rows)
+static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
 {
-    if (columns < 1 || rows < 1) {
+    if (screen_width < 1 || screen_height < 1) {
         return;
     }
 
     if (!streams_initialized) {
-        InitStreams(columns, rows);
+        InitStreams(hdc, screen_width, screen_height);
     }
-
-    const int char_count =
-        (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
 
     for (int i = 0; i < STREAM_COUNT; ++i) {
         Stream *stream = &streams[i];
@@ -544,34 +607,44 @@ static void UpdateStreams(int columns, int rows)
             }
 
             if (stream->spawn_delay == 0) {
-                if (!SpawnStream(stream, columns, rows)) {
-                    /* Retry when a column becomes available. */
-                    stream->spawn_delay = 10;
+                if (!SpawnStream(hdc, stream, screen_width, screen_height)) {
+                    stream->spawn_delay = 5;
                 }
             }
 
             continue;
         }
 
-        ++stream->head_row;
-
-        if (stream->head_row < rows &&
-            stream->head_row < MAX_STREAM_ROWS) {
-            if (stream->chars[stream->head_row].value == L'\0') {
-                if (text_source_file != NULL) {
-                    ReadTextChars(&stream->chars[stream->head_row], 1);
-                } else {
-                    stream->chars[stream->head_row].value =
-                        MATRIX_CHARS[rand() % char_count];
-                }
-            }
+        // Calculate Y position of the bottom of the current head character
+        int head_bottom_y = stream->start_y;
+        for (int r = 0; r <= stream->head_row && r < stream->char_count; ++r) {
+            head_bottom_y += stream->chars[r].height;
         }
 
-        if (stream->visible_length < stream->length) {
-            ++stream->visible_length;
+        // Check if head can still advance down
+        BOOL head_can_advance = (head_bottom_y < screen_height) && 
+                                (stream->head_row + 1 < stream->char_count);
+
+        if (head_can_advance) {
+            // Head advances down one character
+            ++stream->head_row;
+        } else {
+            // Head has reached the bottom of the screen or end of the chunk!
+            // Head does not advance further down below bottom.
+            // Tail immediately runs away!
+            ++stream->first_row;
         }
 
-        if (stream->head_row - stream->length + 1 >= rows) {
+        // Calculate Y position of the top of the tail character (first_row)
+        int tail_top_y = stream->start_y;
+        for (int r = 0; r < stream->first_row && r < stream->char_count; ++r) {
+            tail_top_y += stream->chars[r].height;
+        }
+
+        // If tail has run off the bottom of the screen OR passed all characters:
+        if (stream->first_row > stream->head_row || 
+            stream->first_row >= stream->char_count || 
+            tail_top_y >= screen_height) {
             stream->active = 0;
             stream->spawn_delay = 1 + rand() % 20;
         }
@@ -580,23 +653,11 @@ static void UpdateStreams(int columns, int rows)
 
 static void InvalidateStream(HWND hwnd, const Stream *stream)
 {
-    if (stream_cell_width <= 0 || stream_cell_height <= 0) {
+    if (!stream->active) {
         return;
     }
 
-    RECT rect;
-
-    rect.left = stream->column * stream_cell_width;
-    rect.right = rect.left + stream_cell_width + 1;
-
-    int first_row = stream->head_row - stream->length + 1;
-    if (first_row < 0) {
-        first_row = 0;
-    }
-
-    rect.top = first_row * stream_cell_height;
-    rect.bottom = (stream->head_row + 1) * stream_cell_height;
-
+    RECT rect = GetStreamRect(stream);
     InvalidateRect(hwnd, &rect, FALSE);
 }
 
@@ -640,112 +701,102 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
     SetBkMode(draw_dc, TRANSPARENT);
 
-    if (stream_cell_width > 0 && stream_cell_height > 0) {
-        for (int i = 0; i < STREAM_COUNT; ++i) {
-            const Stream *stream = &streams[i];
+    for (int i = 0; i < STREAM_COUNT; ++i) {
+        const Stream *stream = &streams[i];
 
-            if (!stream->active) {
+        if (!stream->active) {
+            continue;
+        }
+
+        if (stream->x >= paint_rect->right ||
+            stream->x + stream->max_width <= paint_rect->left) {
+            continue;
+        }
+
+        int first_row = stream->first_row;
+        int last_row = stream->head_row;
+        if (last_row >= stream->char_count) {
+            last_row = stream->char_count - 1;
+        }
+
+        if (first_row > last_row) {
+            continue;
+        }
+
+        int offset_y = stream->start_y;
+        for (int r = 0; r < first_row && r < stream->char_count; ++r) {
+            offset_y += stream->chars[r].height;
+        }
+
+        int count_visible = last_row - first_row + 1;
+        if (count_visible < 1) count_visible = 1;
+
+        for (int row = first_row; row <= last_row; ++row) {
+            if (offset_y >= paint_rect->bottom) {
+                break;
+            }
+
+            const int distance = stream->head_row - row;
+            int red = 255 - distance * 200 / count_visible;
+            if (red < 40) red = 40;
+            if (red > 255) red = 255;
+
+            SetTextColor(draw_dc, RGB(red, 0, 0));
+
+            wchar_t ch1 = stream->chars[row].value;
+
+            if (ch1 == L' ') {
+                offset_y += stream->chars[row].height;
                 continue;
             }
 
-            const int stream_x = stream->column * stream_cell_width;
+            wchar_t dia1 = stream->chars[row].diacrytics1;
+            wchar_t dia2 = stream->chars[row].diacrytics2;
 
-            if (stream_x >= paint_rect->right ||
-                stream_x + stream_cell_width <= paint_rect->left) {
-                continue;
-            }
+            int ch1_width = GetCharacterWidth(hdc, ch1);
+            int ch1_offset_x = (stream->max_width - ch1_width) / 2;
 
-            int first_row = 
-                stream->head_row - stream->visible_length + 1;
+            GLYPHMETRICS ch1_gm = GetCharacterDimensions(hdc, ch1);
+            GLYPHMETRICS dia1_gm = GetCharacterDimensions(hdc, dia1);
+            GLYPHMETRICS dia2_gm = GetCharacterDimensions(hdc, dia2);
 
-            if (first_row < 0) {
-                first_row = 0;
-            }
-
-            const int visible_first_row =
-                paint_rect->top / stream_cell_height;
-
-            const int visible_last_row =
-                (paint_rect->bottom - 1) / stream_cell_height;
-
-            if (first_row < visible_first_row) {
-                first_row = visible_first_row;
-            }
-
-            int last_row = stream->head_row;
-
-            if (last_row > visible_last_row) {
-                last_row = visible_last_row;
-            }
-
-            int offset_y = first_row * stream_cell_height;
-
-            for (int row = first_row; row <= last_row; ++row) {
-                const int distance = stream->head_row - row;
-                const int red =
-                    255 - distance * 200 / stream->visible_length;
-
-                SetTextColor(draw_dc, RGB(red, 0, 0));
-
-                wchar_t ch1 = stream->chars[row].value;
-
-                if(ch1 == L' '){
-                    offset_y += WHITESPACE_LENGTH;
-                    continue;
-                }
-
-                wchar_t dia1 = stream->chars[row].diacrytics1;
-                wchar_t dia2 = stream->chars[row].diacrytics2;
-                
-                int ch1_width = GetCharacterWidth(hdc, ch1);
-                int ch1_offset_x = (stream_cell_width - ch1_width)/2;
-
-                HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
-                GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
-                GLYPHMETRICS ch1_gm = GetCharacterDimensions(hdc, ch1);
-                GLYPHMETRICS dia1_gm = GetCharacterDimensions(hdc, dia1);
-                GLYPHMETRICS dia2_gm = GetCharacterDimensions(hdc, dia2);
-                
-                SetTextColor(draw_dc, RGB(red, 0, 0));
-                
-                if (dia1 != L'\0'){
-                    TextOutW(
-                        draw_dc,
-                        stream_x + ch1_offset_x + ch1_width,
-                        offset_y + ch1_gm.gmptGlyphOrigin.y + dia1_gm.gmBlackBoxY,
-                        &dia1,
-                        1
-                    );                    
-                }
-
-                if (dia2 != L'\0'){
-                    TextOutW(
-                        draw_dc,
-                        stream_x + ch1_offset_x + ch1_width,
-                        offset_y + ch1_gm.gmptGlyphOrigin.y + dia2_gm.gmBlackBoxY,
-                        &dia2,
-                        1
-                    );
-                }
-
-                if (dia1 != L'\0' && dia2 != L'\0'){
-                    offset_y += max(dia1_gm.gmBlackBoxY, dia2_gm.gmBlackBoxY);
-                } else if (dia1 != L'\0'){
-                    offset_y += dia1_gm.gmBlackBoxY;
-                } else if (dia2 != L'\0'){
-                    offset_y += dia2_gm.gmBlackBoxY;
-                }
-                
+            if (dia1 != L'\0') {
                 TextOutW(
                     draw_dc,
-                    stream_x + ch1_offset_x,
-                    offset_y + ch1_gm.gmptGlyphOrigin.y,
-                    &ch1,
+                    stream->x + ch1_offset_x + ch1_width,
+                    offset_y + ch1_gm.gmptGlyphOrigin.y + dia1_gm.gmBlackBoxY,
+                    &dia1,
                     1
                 );
-
-                offset_y += ch1_gm.gmBlackBoxY + VERTICAL_SPACING;
             }
+
+            if (dia2 != L'\0') {
+                TextOutW(
+                    draw_dc,
+                    stream->x + ch1_offset_x + ch1_width,
+                    offset_y + ch1_gm.gmptGlyphOrigin.y + dia2_gm.gmBlackBoxY,
+                    &dia2,
+                    1
+                );
+            }
+
+            if (dia1 != L'\0' && dia2 != L'\0') {
+                offset_y += max((int)dia1_gm.gmBlackBoxY, (int)dia2_gm.gmBlackBoxY);
+            } else if (dia1 != L'\0') {
+                offset_y += (int)dia1_gm.gmBlackBoxY;
+            } else if (dia2 != L'\0') {
+                offset_y += (int)dia2_gm.gmBlackBoxY;
+            }
+
+            TextOutW(
+                draw_dc,
+                stream->x + ch1_offset_x,
+                offset_y + ch1_gm.gmptGlyphOrigin.y,
+                &ch1,
+                1
+            );
+
+            offset_y += ch1_gm.gmBlackBoxY + VERTICAL_SPACING;
         }
     }
 
@@ -799,10 +850,11 @@ static LRESULT CALLBACK WindowProc(
         }       
         case WM_TIMER:
         {
-            int columns = 0;
-            int rows = 0;
-            GetGridDimensions(hwnd, &columns, &rows);
-            UpdateStreams(columns, rows);
+            RECT client_rect;
+            GetClientRect(hwnd, &client_rect);
+            HDC hdc = GetDC(hwnd);
+            UpdateStreams(hdc, client_rect.right, client_rect.bottom);
+            ReleaseDC(hwnd, hdc);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
