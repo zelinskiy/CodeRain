@@ -12,7 +12,7 @@
 // #define FULLSCREEN
 
 #define STREAM_COUNT 20
-#define STREAM_SPEED 70
+#define STREAM_SPEED 500
 #define MAX_STREAM_ROWS 2048
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
@@ -178,8 +178,24 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
         dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
     }
 
+    int height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
+
+    // Some ad-hoc fixes for particular cases
+    if (sc->value == L'ц') {
+        height -= 10;
+    } else if (sc->value == L'р') {
+        height -= 5;
+    }
+
+    if (sc->diacritic1 == 0x2DE3 || sc->diacritic1 == 0x2DED) {
+        dia1_y += 3;
+        dia2_y += 3;
+        dia_h += 4;
+        height += 3;
+    }
+
     sc->width = max(w, 1);
-    sc->height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
+    sc->height = height;
     sc->base_width = ch_w;
     sc->base_offset_y = dia_h + ch_gm.gmptGlyphOrigin.y;
     sc->dia1_offset_y = dia1_y;

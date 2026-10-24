@@ -7,7 +7,6 @@ A minimal Matrix-style screensaver for Windows 11.
 - csl: circumflexus centering
 - csl: fix accented оук letter
 - csl: negative top spacing for accented ять
-- csl: more top spacing for с/д титлованое
 - csl: цы/рцы + аз, ...: can add negative bottom spacing for them
 - csl: fix capital letters (or just convert them to lowercase?)
 - read characters until the end of word
