@@ -8,9 +8,7 @@
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 
-// To enable debug console
-// #define DEBUG
-
+// #define DEBUG_CONSOLE
 // #define FULLSCREEN
 
 #define STREAM_COUNT 20
@@ -900,7 +898,7 @@ int WINAPI WinMain(
 
     ShowWindow(hwnd, SW_SHOW);
 
-    #ifdef DEBUG
+    #ifdef DEBUG_CONSOLE
     AllocConsole();
     FILE *console;
     freopen_s(&console, "CONOUT$", "w", stdout);

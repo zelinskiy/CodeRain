@@ -5,6 +5,7 @@ A minimal Matrix-style screensaver for Windows 11.
 ## TODO
 - csl: aspiration overlaps with accent
 - csl: circumflexus centering
+- csl: fix accented оук letter
 - csl: цы/рцы + аз, ...: can add negative spacing for them
 - csl: fix capital letters (or just convert them to lowercase?)
 - read characters until the end of word
