@@ -19,6 +19,11 @@
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
 
+typedef struct {
+    wchar_t value;
+    wchar_t diacrytics1;
+    wchar_t diacrytics2;
+} StreamCharacter;
 
 typedef struct {
     int active;
@@ -27,7 +32,7 @@ typedef struct {
     int head_row;
     int length;
     int visible_length;
-    wchar_t chars[MAX_STREAM_ROWS][3];
+    StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
 
 
@@ -190,7 +195,7 @@ static BOOL IsOmitSymbol(wchar_t ch)
     return FALSE;
 }
 
-static size_t ReadTextChars(wchar_t (*dest)[3], size_t count)
+static size_t ReadTextChars(StreamCharacter *dest, size_t count)
 {
     if (text_source_file == NULL || count == 0) {
         return 0;
@@ -213,15 +218,15 @@ static size_t ReadTextChars(wchar_t (*dest)[3], size_t count)
         }
 
         if (!IsDiacritic(ch)) {
-            dest[total_read][0] = ch;
-            dest[total_read][1] = L'\0';
-            dest[total_read][2] = L'\0';
+            dest[total_read].value = ch;
+            dest[total_read].diacrytics1 = L'\0';
+            dest[total_read].diacrytics2 = L'\0';
             total_read++;
         } else if (total_read > 0) {
-            if (dest[total_read - 1][1] == L'\0') {
-                dest[total_read - 1][1] = ch;
-            } else if (dest[total_read - 1][2] == L'\0') {
-                dest[total_read - 1][2] = ch;
+            if (dest[total_read - 1].diacrytics1 == L'\0') {
+                dest[total_read - 1].diacrytics1 = ch;
+            } else if (dest[total_read - 1].diacrytics2 == L'\0') {
+                dest[total_read - 1].diacrytics2 = ch;
             }
         }
     }
@@ -343,7 +348,7 @@ static BOOL InitFontMetrics(HWND hwnd)
     //     - tm.tmInternalLeading - tm.tmDescent;
     
     stream_cell_width = tm.tmMaxCharWidth;
-    stream_cell_height = tm.tmHeight * 0.8;
+    stream_cell_height = floor(tm.tmHeight * 0.8);
 
     if (stream_cell_width < 1) stream_cell_width = 1;
     if (stream_cell_height < 1) stream_cell_height = 1;
@@ -456,12 +461,12 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
             size_t grabbed = ReadTextChars(&stream->chars[head_row], (size_t)needed);
             if (grabbed < (size_t)needed) {
                 for (size_t k = grabbed; k < (size_t)needed; ++k) {
-                    stream->chars[head_row + k][0] = MATRIX_CHARS[rand() % char_count];
+                    stream->chars[head_row + k].value = MATRIX_CHARS[rand() % char_count];
                 }
             }
         } else {
             for (int r = head_row; r < head_row + needed; ++r) {
-                stream->chars[r][0] = MATRIX_CHARS[rand() % char_count];
+                stream->chars[r].value = MATRIX_CHARS[rand() % char_count];
             }
         }
 
@@ -531,11 +536,11 @@ static void UpdateStreams(int columns, int rows)
 
         if (stream->head_row < rows &&
             stream->head_row < MAX_STREAM_ROWS) {
-            if (stream->chars[stream->head_row] == L'\0') {
+            if (stream->chars[stream->head_row].value == L'\0') {
                 if (text_source_file != NULL) {
                     ReadTextChars(&stream->chars[stream->head_row], 1);
                 } else {
-                    stream->chars[stream->head_row][0] =
+                    stream->chars[stream->head_row].value =
                         MATRIX_CHARS[rand() % char_count];
                 }
             }
@@ -659,7 +664,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
                 SetTextColor(draw_dc, RGB(red, 0, 0));
 
-                wchar_t ch1 = stream->chars[row][0];
+                wchar_t ch1 = stream->chars[row].value;
 
                 TextOutW(
                     draw_dc,
@@ -670,31 +675,31 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
                 );
 
                 // Diacrytics
-                wchar_t ch2 = stream->chars[row][1];
-                wchar_t ch3 = stream->chars[row][2];
+                wchar_t dia1 = stream->chars[row].diacrytics1;
+                wchar_t dia2 = stream->chars[row].diacrytics2;
 
                 int ch1_width = 0;
                 HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
                 GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
                 SelectObject(hdc, hOldFont);
                 
-                if (ch2 != L'\0'){
+                if (dia1 != L'\0'){
                     SetTextColor(draw_dc, RGB(red, 0, 0));
                     TextOutW(
                         draw_dc,
                         stream_x + ch1_width,
                         row * stream_cell_height,
-                        &ch2,
+                        &dia1,
                         1
                     );
                 }                    
-                if (ch3 != L'\0'){
+                if (dia2 != L'\0'){
                     SetTextColor(draw_dc, RGB(red, 0, 0));
                     TextOutW(
                         draw_dc,
                         stream_x + ch1_width,
                         row * stream_cell_height,
-                        &ch3,
+                        &dia2,
                         1
                     );
                 }
