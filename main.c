@@ -18,14 +18,19 @@
 #define FONT_FAMILY L"Ponomar"
 #define VERTICAL_SPACING 3
 #define WHITESPACE_LENGTH 15
+#define FALLBACK_WHITESPACE_WIDTH 12
 #define HORIZONTAL_STREAM_PADDING 10
 
 typedef struct {
     wchar_t value;
-    wchar_t diacrytics1;
-    wchar_t diacrytics2;
+    wchar_t diacritic1;
+    wchar_t diacritic2;
     int width;
     int height;
+    int base_width;
+    int base_offset_y;
+    int dia1_offset_y;
+    int dia2_offset_y;
 } StreamCharacter;
 
 typedef struct {
@@ -58,7 +63,7 @@ static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
 
 static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
 static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
-static const wchar_t DIACRYTICS[] = { 
+static const wchar_t DIACRITICS[] = { 
     0x0300,  // COMBINING GRAVE ACCENT
     0x0301,  // COMBINING ACUTE ACCENT
     0x0311,  // COMBINING INVERTED BREVE
@@ -68,7 +73,6 @@ static const wchar_t DIACRYTICS[] = {
     0x2DE3,  // COMBINING CYRILLIC LETTER DE
     0x2DED,  // COMBINING CYRILLIC LETTER ES
     0x0487,  // COMBINING CYRILLIC POKRYTIE
-    L'\0'
 }; 
 static const wchar_t OMIT_SYMBOLS[] = {
     0x003A,     // Colon (:)
@@ -90,17 +94,14 @@ static const wchar_t OMIT_SYMBOLS[] = {
     0xA67E,     // CYRILLIC KAVYKA (꙾) -- these actually shall be cleaned up
     0x005B,     // Left square bracket ([)
     0x005D,     // Right square bracket (])
-    // 0x2424,  // Newline symbol
+    0x2424,  // Newline symbol
     L'\0'
 };
 
 static Stream streams[STREAM_COUNT];
 static int streams_initialized = 0;
 
-// Font resource
 static HFONT stream_font = NULL;
-
-// Text source file stream
 static FILE *text_source_file = NULL;
 
 // Backbuffer
@@ -140,9 +141,13 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     if (sc->value == L' ') {
         sc->width = GetCharacterWidth(hdc, L' ');
         if (sc->width < 1) {
-            sc->width = 12;
+            sc->width = FALLBACK_WHITESPACE_WIDTH;
         }
         sc->height = WHITESPACE_LENGTH;
+        sc->base_width = sc->width;
+        sc->base_offset_y = 0;
+        sc->dia1_offset_y = 0;
+        sc->dia2_offset_y = 0;
         return;
     }
 
@@ -151,23 +156,34 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     int w = max(ch_w, (int)ch_gm.gmBlackBoxX);
 
     int dia_h = 0;
-    if (sc->diacrytics1 != L'\0' && sc->diacrytics2 != L'\0') {
-        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacrytics1);
-        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacrytics2);
+    int dia1_y = 0;
+    int dia2_y = 0;
+
+    if (sc->diacritic1 != L'\0' && sc->diacritic2 != L'\0') {
+        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
+        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
         dia_h = max((int)d1.gmBlackBoxY, (int)d2.gmBlackBoxY);
         w = max(w, ch_w + max((int)d1.gmBlackBoxX, (int)d2.gmBlackBoxX));
-    } else if (sc->diacrytics1 != L'\0') {
-        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacrytics1);
+        dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
+        dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
+    } else if (sc->diacritic1 != L'\0') {
+        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
         dia_h = (int)d1.gmBlackBoxY;
         w = max(w, ch_w + (int)d1.gmBlackBoxX);
-    } else if (sc->diacrytics2 != L'\0') {
-        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacrytics2);
+        dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
+    } else if (sc->diacritic2 != L'\0') {
+        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
         dia_h = (int)d2.gmBlackBoxY;
         w = max(w, ch_w + (int)d2.gmBlackBoxX);
+        dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
     }
 
     sc->width = max(w, 1);
     sc->height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
+    sc->base_width = ch_w;
+    sc->base_offset_y = dia_h + ch_gm.gmptGlyphOrigin.y;
+    sc->dia1_offset_y = dia1_y;
+    sc->dia2_offset_y = dia2_y;
 }
 
 static FILE *OpenTextFile(const wchar_t *filename)
@@ -241,8 +257,8 @@ static BOOL GetNextChar(FILE *fp, wchar_t *out_char)
 
 static BOOL IsDiacritic(wchar_t ch)
 {
-    for (size_t i = 0; DIACRYTICS[i] != L'\0'; i++) {
-        if (DIACRYTICS[i] == ch) {
+    for (size_t i = 0; DIACRITICS[i] != L'\0'; i++) {
+        if (DIACRITICS[i] == ch) {
             return TRUE;
         }
     }
@@ -283,13 +299,11 @@ static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
     }
 
     size_t total_read = 0;
-    if (!IsOmitSymbol(ch)) {
-        if (!IsDiacritic(ch)) {
-            dest[total_read].value = ch;
-            dest[total_read].diacrytics1 = L'\0';
-            dest[total_read].diacrytics2 = L'\0';
-            total_read++;
-        }
+    if (!IsOmitSymbol(ch) && !IsDiacritic(ch)) {
+        dest[total_read].value = ch;
+        dest[total_read].diacritic1 = L'\0';
+        dest[total_read].diacritic2 = L'\0';
+        total_read++;
     }
 
     while (total_read < max_count) {
@@ -307,14 +321,14 @@ static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
 
         if (!IsDiacritic(ch)) {
             dest[total_read].value = ch;
-            dest[total_read].diacrytics1 = L'\0';
-            dest[total_read].diacrytics2 = L'\0';
+            dest[total_read].diacritic1 = L'\0';
+            dest[total_read].diacritic2 = L'\0';
             total_read++;
         } else if (total_read > 0) {
-            if (dest[total_read - 1].diacrytics1 == L'\0') {
-                dest[total_read - 1].diacrytics1 = ch;
-            } else if (dest[total_read - 1].diacrytics2 == L'\0') {
-                dest[total_read - 1].diacrytics2 = ch;
+            if (dest[total_read - 1].diacritic1 == L'\0') {
+                dest[total_read - 1].diacritic1 = ch;
+            } else if (dest[total_read - 1].diacritic2 == L'\0') {
+                dest[total_read - 1].diacritic2 = ch;
             }
         }
     }
@@ -517,8 +531,8 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
         grabbed = 25 + rand() % 25;
         for (size_t k = 0; k < grabbed; ++k) {
             stream->chars[k].value = MATRIX_CHARS[rand() % char_count];
-            stream->chars[k].diacrytics1 = L'\0';
-            stream->chars[k].diacrytics2 = L'\0';
+            stream->chars[k].diacritic1 = L'\0';
+            stream->chars[k].diacritic2 = L'\0';
         }
     }
 
@@ -626,12 +640,8 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
                                 (stream->head_row + 1 < stream->char_count);
 
         if (head_can_advance) {
-            // Head advances down one character
             ++stream->head_row;
         } else {
-            // Head has reached the bottom of the screen or end of the chunk!
-            // Head does not advance further down below bottom.
-            // Tail immediately runs away!
             ++stream->first_row;
         }
 
@@ -743,60 +753,44 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
             SetTextColor(draw_dc, RGB(red, 0, 0));
 
-            wchar_t ch1 = stream->chars[row].value;
+            const StreamCharacter *sc = &stream->chars[row];
 
-            if (ch1 == L' ') {
-                offset_y += stream->chars[row].height;
+            if (sc->value == L' ') {
+                offset_y += sc->height;
                 continue;
             }
 
-            wchar_t dia1 = stream->chars[row].diacrytics1;
-            wchar_t dia2 = stream->chars[row].diacrytics2;
+            int ch_offset_x = (stream->max_width - sc->base_width) / 2;
 
-            int ch1_width = GetCharacterWidth(hdc, ch1);
-            int ch1_offset_x = (stream->max_width - ch1_width) / 2;
-
-            GLYPHMETRICS ch1_gm = GetCharacterDimensions(hdc, ch1);
-            GLYPHMETRICS dia1_gm = GetCharacterDimensions(hdc, dia1);
-            GLYPHMETRICS dia2_gm = GetCharacterDimensions(hdc, dia2);
-
-            if (dia1 != L'\0') {
+            if (sc->diacritic1 != L'\0') {
                 TextOutW(
                     draw_dc,
-                    stream->x + ch1_offset_x + ch1_width,
-                    offset_y + ch1_gm.gmptGlyphOrigin.y + dia1_gm.gmBlackBoxY,
-                    &dia1,
+                    stream->x + ch_offset_x + sc->base_width,
+                    offset_y + sc->dia1_offset_y,
+                    &sc->diacritic1,
                     1
                 );
             }
 
-            if (dia2 != L'\0') {
+            if (sc->diacritic2 != L'\0') {
                 TextOutW(
                     draw_dc,
-                    stream->x + ch1_offset_x + ch1_width,
-                    offset_y + ch1_gm.gmptGlyphOrigin.y + dia2_gm.gmBlackBoxY,
-                    &dia2,
+                    stream->x + ch_offset_x + sc->base_width,
+                    offset_y + sc->dia2_offset_y,
+                    &sc->diacritic2,
                     1
                 );
-            }
-
-            if (dia1 != L'\0' && dia2 != L'\0') {
-                offset_y += max((int)dia1_gm.gmBlackBoxY, (int)dia2_gm.gmBlackBoxY);
-            } else if (dia1 != L'\0') {
-                offset_y += (int)dia1_gm.gmBlackBoxY;
-            } else if (dia2 != L'\0') {
-                offset_y += (int)dia2_gm.gmBlackBoxY;
             }
 
             TextOutW(
                 draw_dc,
-                stream->x + ch1_offset_x,
-                offset_y + ch1_gm.gmptGlyphOrigin.y,
-                &ch1,
+                stream->x + ch_offset_x,
+                offset_y + sc->base_offset_y,
+                &sc->value,
                 1
             );
 
-            offset_y += ch1_gm.gmBlackBoxY + VERTICAL_SPACING;
+            offset_y += sc->height;
         }
     }
 
