@@ -773,7 +773,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
                 TextOutW(
                     draw_dc,
-                    stream_x,
+                    stream_x + (stream_cell_width - ch1_width)/2,
                     offset_y + gm.gmptGlyphOrigin.y,
                     &ch1,
                     1
