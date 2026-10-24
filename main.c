@@ -11,11 +11,13 @@
 // To enable debug console
 // #define DEBUG
 
+// #define FULLSCREEN
+
 #define STREAM_COUNT 20
-#define STREAM_SPEED 400
+#define STREAM_SPEED 70
 #define MAX_STREAM_ROWS 2048
 #define MIN_TAIL_LENGTH 30
-#define MAX_TAIL_LENGTH 32
+#define MAX_TAIL_LENGTH 60
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
 #define VERTICAL_SPACING 2
@@ -912,6 +914,25 @@ int WINAPI WinMain(
         return 1;
     }
 
+    #ifdef FULLSCREEN
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    HWND hwnd = CreateWindowExW(
+        0,
+        CLASS_NAME,
+        L"Matrix Screensaver",
+        WS_POPUP | WS_VISIBLE,
+        0, 
+        0,
+        screenWidth,
+        screenHeight,
+        NULL, 
+        NULL, 
+        hInstance, 
+        NULL
+    );
+    #else
     HWND hwnd = CreateWindowExW(
         0,
         CLASS_NAME,
@@ -924,7 +945,9 @@ int WINAPI WinMain(
         NULL,
         NULL,
         hInstance,
-        NULL);
+        NULL
+    );
+    #endif
 
     if (hwnd == NULL)
     {
