@@ -12,12 +12,14 @@
 // #define DEBUG
 
 #define STREAM_COUNT 20
-#define STREAM_SPEED 150
+#define STREAM_SPEED 400
 #define MAX_STREAM_ROWS 2048
-#define MIN_TAIL_LENGTH 15
-#define MAX_TAIL_LENGTH 16
+#define MIN_TAIL_LENGTH 30
+#define MAX_TAIL_LENGTH 32
 #define FONT_SIZE -30
 #define FONT_FAMILY L"Ponomar"
+#define VERTICAL_SPACING 2
+#define WHITESPACE_LENGTH 15
 
 typedef struct {
     wchar_t value;
@@ -105,6 +107,49 @@ static HBITMAP backbuffer_bitmap = NULL;
 static HBITMAP backbuffer_old_bitmap = NULL;
 static int backbuffer_width = 0;
 static int backbuffer_height = 0;
+
+void GetExactGlyphDimensions(HDC hdc, HFONT hPonomarFont, wchar_t character) {
+    // 1. Select your font into the HDC (crucial, otherwise GetGlyphOutlineW fails)
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hPonomarFont);
+    if (!hOldFont) {
+        printf("Failed to select font into HDC\n");
+        return;
+    }
+
+    // 2. Initialize GLYPHMETRICS to zero so it doesn't hold garbage on failure
+    GLYPHMETRICS gm;
+    memset(&gm, 0, sizeof(gm));
+
+    // Identity matrix
+    MAT2 mat2 = { 
+        {0, 1}, {0, 0},  // eM11, eM12
+        {0, 0}, {0, 1}   // eM21, eM22
+    };
+
+    // 3. Call GetGlyphOutlineW using NULL (not nullptr)
+    DWORD result = GetGlyphOutlineW(
+        hdc, 
+        (UINT)character, 
+        GGO_METRICS, 
+        &gm, 
+        0, 
+        NULL,
+        &mat2
+    );
+
+    if (result == GDI_ERROR) {
+        DWORD err = GetLastError();
+        printf("GetGlyphOutlineW failed with error code: %lu\n", err);
+    } else {
+        // Success! These values will now be real.
+        printf("Character: %lc\n", character);
+        printf("  Black Box Height (Y): %u\n", gm.gmBlackBoxY);
+        printf("  Glyph Origin Y      : %d\n", gm.gmptGlyphOrigin.y);
+    }
+
+    // 4. Restore old font
+    SelectObject(hdc, hOldFont);
+}
 
 static FILE *OpenTextFile(const wchar_t *filename)
 {
@@ -657,6 +702,8 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
                 last_row = visible_last_row;
             }
 
+            int offset_y = first_row * stream_cell_height;
+
             for (int row = first_row; row <= last_row; ++row) {
                 const int distance = stream->head_row - row;
                 const int red =
@@ -666,43 +713,94 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
                 wchar_t ch1 = stream->chars[row].value;
 
-                TextOutW(
-                    draw_dc,
-                    stream_x,
-                    row * stream_cell_height,
-                    &ch1,
-                    1
-                );
+                if(ch1 == L' '){
+                    offset_y += WHITESPACE_LENGTH;
+                    continue;
+                }
 
-                // Diacrytics
+                SIZE ch1_size;
+                GetTextExtentPoint32W(hdc, &ch1, 1, &ch1_size);
+
                 wchar_t dia1 = stream->chars[row].diacrytics1;
-                wchar_t dia2 = stream->chars[row].diacrytics2;
+                SIZE dia1_size;
+                GetTextExtentPoint32W(hdc, &dia1, 1, &dia1_size);
 
+                wchar_t dia2 = stream->chars[row].diacrytics2;
+                SIZE dia2_size;
+                GetTextExtentPoint32W(hdc, &dia2, 1, &dia2_size);
+                
                 int ch1_width = 0;
                 HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
                 GetCharWidth32W(hdc, ch1, ch1, &ch1_width);
-                SelectObject(hdc, hOldFont);
+                GLYPHMETRICS gm;
+                MAT2 mat2 = { 
+                    {0, 1}, {0, 0},
+                    {0, 0}, {0, 1},
+                };
+                GetGlyphOutlineW(hdc, (UINT)ch1, GGO_METRICS, &gm, 0, NULL, &mat2);
                 
-                if (dia1 != L'\0'){
-                    SetTextColor(draw_dc, RGB(red, 0, 0));
-                    TextOutW(
-                        draw_dc,
-                        stream_x + ch1_width,
-                        row * stream_cell_height,
-                        &dia1,
-                        1
-                    );
-                }                    
-                if (dia2 != L'\0'){
-                    SetTextColor(draw_dc, RGB(red, 0, 0));
-                    TextOutW(
-                        draw_dc,
-                        stream_x + ch1_width,
-                        row * stream_cell_height,
-                        &dia2,
-                        1
-                    );
-                }
+                SelectObject(hdc, hOldFont);
+
+                // printf("ch1: %X; gm.gmBlackBoxY: %d; gm.gmptGlyphOrigin.y:%d\n", 
+                //     ch1, gm.gmBlackBoxY, gm.gmptGlyphOrigin.y);
+
+                // GLYPHMETRICS gm;
+                // MAT2 mat2 = { {0, 1}, {0, 0}, {0, 0}, {0, 1} };
+
+                // GetGlyphOutlineW(hdc, (UINT)ch1, GGO_METRICS, &gm, 0, NULL, &mat2);
+
+                // printf("ch1_size.cy: %d\n", ch1_size.cy);
+                
+
+                // printf("offset_y: %d\n", offset_y);
+
+                // printf("dia1_size.cx: %d\n", dia1_size.cx);
+                // printf("dia1_size.cy: %d\n", dia1_size.cy);
+
+                // printf("dia2_size.cx: %d\n", dia2_size.cx);
+                // printf("dia2_size.cy: %d\n", dia2_size.cy);
+
+                // if (dia1 != L'\0' && dia2 != L'\0'){
+                //     offset_y += max(dia1_size.cy, dia2_size.cy);
+                // } else if (dia1 != L'0') {
+                //     offset_y += dia1_size.cy;
+                // } else if (dia2 != L'0') {
+                //     offset_y += dia2_size.cy;
+                // }
+
+                // int topExtent = gm.gmptGlyphOrigin.y;
+                // int bottomExtent = gm.gmBlackBoxY - gm.gmptGlyphOrigin.y;
+
+                TextOutW(
+                    draw_dc,
+                    stream_x,
+                    offset_y + gm.gmptGlyphOrigin.y,
+                    &ch1,
+                    1
+                );
+                
+                // if (dia1 != L'\0'){
+                //     SetTextColor(draw_dc, RGB(red, 0, 0));                    
+                //     TextOutW(
+                //         draw_dc,
+                //         stream_x + ch1_width,
+                //         offset_y,
+                //         &dia1,
+                //         1
+                //     );
+                // }
+                // if (dia2 != L'\0'){
+                //     SetTextColor(draw_dc, RGB(red, 0, 0));                    
+                //     TextOutW(
+                //         draw_dc,
+                //         stream_x + ch1_width,
+                //         offset_y,
+                //         &dia2,
+                //         1
+                //     );
+                // }
+
+                offset_y += gm.gmBlackBoxY + VERTICAL_SPACING;
             }
         }
     }
