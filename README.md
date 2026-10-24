@@ -3,6 +3,9 @@
 A minimal Matrix-style screensaver for Windows 11.
 
 ## TODO
+- csl: ц + а, ...
+- fix csl capital letters (or just convert them to lowercase?)
+- read characters until the end of word
 - Split into separate procedures
 - rotators (single characters which change every tick)
 - various modes: 100% filled screen, gradual filling, console (?), etc.
