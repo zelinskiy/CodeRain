@@ -1,18 +1,21 @@
 #define WIN32_LEAN_AND_MEAN
+#define __STDC_WANT_LIB_EXT1__ 1
 
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <string.h>
 
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 
-// #define DEBUG_CONSOLE
+#define DEBUG_CONSOLE
 // #define FULLSCREEN
 
 #define MAX_STREAM_SPEED 1000
 #define MAX_STREAM_COUNT 200
+#define MAX_MATRIX_CHARS 512
 #define MAX_STREAM_ROWS 2048
 #define FALLBACK_WHITESPACE_WIDTH 12
 #define HORIZONTAL_STREAM_PADDING 10
@@ -28,12 +31,15 @@ enum Language {
 
 typedef struct {
     enum Language lang;
-    wchar_t *file_name;
-    wchar_t *font_familly;
-    wchar_t *matrix_chars;    
+    wchar_t file_name[256];
+    wchar_t font_familly[64];
+    wchar_t matrix_chars[MAX_MATRIX_CHARS];
+    int matrix_chars_count;
     int font_size;
     int stream_count;
     int stream_speed;
+    int min_stream_length;
+    int max_stream_length;
     int vertical_spacing;
     int whitespace_length;
     int horizontal_stream_padding;
@@ -71,7 +77,7 @@ static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
 
 static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
-static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+static const wchar_t GR_MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 static const wchar_t CSL_MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
 static const wchar_t JP_MATRIX_CHARS[] =
     L"アイウエオカキクケコサシスセソ"
@@ -126,18 +132,21 @@ static const wchar_t OMIT_SYMBOLS[] = {
 };
 
 static Settings settings = {
-    .lang = CSL,
-    .file_name = L"psalter.txt",
-    .font_familly = L"Ponomar",
-    .matrix_chars =  L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ",
-    .font_size = 30,
+    .lang = JP,
+    .file_name = L'\0',
+    .font_familly = L"MS Gothic",
+    .matrix_chars = L'\0',
+    .matrix_chars_count = 0,
+    .font_size = 10,
     .stream_count = 20,
     .stream_speed = 700,
+    .min_stream_length = 5,
+    .max_stream_length = 25,
     .vertical_spacing = 3,
     .whitespace_length = 15,
     .horizontal_stream_padding = 10,
-    .color_r = 255,
-    .color_g = 0,
+    .color_r = 0,
+    .color_g = 255,
     .color_b = 0,
 };
 
@@ -256,6 +265,13 @@ static FILE *OpenTextFile(const wchar_t *filename)
 #define TRY_LANG(l)\
 if (!strcmp(v, #l)) {\
     settings.lang = l;\
+    if (settings.matrix_chars[0] == L'\0') {\
+        wcscpy_s(settings.matrix_chars,\
+            sizeof(settings.matrix_chars) / sizeof(wchar_t),\
+            l ## _MATRIX_CHARS\
+        );\
+        settings.matrix_chars_count = sizeof(l ## _MATRIX_CHARS) / sizeof(wchar_t);\
+    }\
     return;\
 }
 
@@ -271,28 +287,42 @@ static void SetLanguage(const char *v) {
 #define PARSE_INT(field)\
 if (!strcmp(k, #field)) {\
     settings.field = atoi(v);\
-    return;\
 }
 
-#define PARSE_STR(field)\
-if (!strcmp(k, #field)){\
-    mbstowcs(settings.field, v, 256);\
-    return;\
+#define PARSE_STR(field) \
+if (!strcmp(k, #field)) { \
+    size_t converted = 0; \
+    mbstowcs_s(&converted, settings.field, sizeof(settings.field) / sizeof(wchar_t), v, _TRUNCATE); \
 }
 
 static void LoadSettings() {
-    
+    printf("Loading settings\n");
     FILE* file = OpenTextFile(L"settings.ini");
 
-    char line[512];
+    if(file == NULL) {
+        printf("Cant open settings file\n");
+    }
+
+    char line[2048];
     while (fgets(line, sizeof(line), file)) {
         char k[64], v[256];
-        if (sscanf(line, "%63s = %255s", k, v) != 2) continue;
-        if (k[0] == '#') continue;
+        int scan_res = sscanf_s(
+            line, 
+            "%63s = %255[^\r\n]", 
+            k, (unsigned)sizeof(k), 
+            v, (unsigned)sizeof(v) 
+        );
+        if (scan_res != 2) \
+            continue;
+        if (k[0] == '#') 
+            continue;
+        printf("%s = %s\n", k, v);
 
         PARSE_INT(font_size);
         PARSE_INT(stream_count);
         PARSE_INT(stream_speed);
+        PARSE_INT(min_stream_length);
+        PARSE_INT(max_stream_length);
         PARSE_INT(vertical_spacing);
         PARSE_INT(whitespace_length);
         PARSE_INT(horizontal_stream_padding);
@@ -305,10 +335,22 @@ static void LoadSettings() {
         PARSE_STR(matrix_chars);
 
         if (!strcmp(k, "lang"))
-            set_lang(v);
+            SetLanguage(v);
     }
     fclose(file);
-    return 1;
+
+    // Checking that all settings are safe
+    if(settings.matrix_chars_count > MAX_MATRIX_CHARS) {
+        settings.matrix_chars_count = MAX_MATRIX_CHARS;
+    }
+    if(settings.stream_speed > MAX_STREAM_SPEED) {
+        settings.stream_speed = MAX_STREAM_SPEED;
+    }
+    if(settings.stream_count > MAX_STREAM_COUNT) {
+        settings.stream_count = MAX_STREAM_COUNT;
+    }
+
+    return;
 }
 
 static BOOL InitTextSource(const wchar_t *filename)
@@ -641,11 +683,10 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
         grabbed = ReadTextChunk(stream->chars, MAX_STREAM_ROWS);
     }
 
-    if (grabbed == 0) {
-        const int char_count = (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
-        grabbed = 25 + rand() % 25;
+    if (grabbed == 0) {        
+        grabbed = settings.min_stream_length + rand() % (settings.min_stream_length - settings.max_stream_length);
         for (size_t k = 0; k < grabbed; ++k) {
-            stream->chars[k].value = MATRIX_CHARS[rand() % char_count];
+            stream->chars[k].value = settings.matrix_chars[rand() % settings.matrix_chars_count];
             stream->chars[k].diacritic1 = L'\0';
             stream->chars[k].diacritic2 = L'\0';
         }
@@ -862,11 +903,18 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
             }
 
             const int distance = stream->head_row - row;
-            int red = 255 - distance * 200 / count_visible;
-            if (red < 40) red = 40;
-            if (red > 255) red = 255;
+            
+            int fade = 255 - distance * 200 / count_visible;
+            if (fade < 40) fade = 40;
+            if (fade > 255) fade = 255;
 
-            SetTextColor(draw_dc, RGB(red, 0, 0));
+            COLORREF font_color = RGB(
+                settings.color_r * fade / 255,
+                settings.color_g * fade / 255,
+                settings.color_b * fade / 255
+            );
+            
+            SetTextColor(draw_dc, font_color);
 
             const StreamCharacter *sc = &stream->chars[row];
 
@@ -943,6 +991,7 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
+            // LoadSettings();
             InitTextSource(settings.file_name);
 
             if (!InitFontMetrics(hwnd)) {
@@ -950,9 +999,9 @@ static LRESULT CALLBACK WindowProc(
                 return -1;
             }
 
-            int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
+            // int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
 
-            if (SetTimer(hwnd, 1, stream_speed, NULL) == 0) {
+            if (SetTimer(hwnd, 1, settings.stream_speed, NULL) == 0) {
                 CleanupFont();
                 CleanupTextSource();
                 return -1;
@@ -1019,6 +1068,14 @@ int WINAPI WinMain(
         return 1;
     }
 
+    #ifdef DEBUG_CONSOLE
+    AllocConsole();
+    FILE *console;
+    freopen_s(&console, "CONOUT$", "w", stdout);
+    #endif
+
+    LoadSettings();
+
     #ifdef FULLSCREEN
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -1061,11 +1118,7 @@ int WINAPI WinMain(
 
     ShowWindow(hwnd, SW_SHOW);
 
-    #ifdef DEBUG_CONSOLE
-    AllocConsole();
-    FILE *console;
-    freopen_s(&console, "CONOUT$", "w", stdout);
-    #endif
+    
 
     MSG msg;    
 
