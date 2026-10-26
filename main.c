@@ -253,6 +253,64 @@ static FILE *OpenTextFile(const wchar_t *filename)
     return NULL;
 }
 
+#define TRY_LANG(l)\
+if (!strcmp(v, #l)) {\
+    settings.lang = l;\
+    return;\
+}
+
+static void SetLanguage(const char *v) {
+    TRY_LANG(EN);
+    TRY_LANG(LA);
+    TRY_LANG(GR);
+    TRY_LANG(JP);
+    TRY_LANG(CSL);
+    TRY_LANG(AKK);
+}
+
+#define PARSE_INT(field)\
+if (!strcmp(k, #field)) {\
+    settings.field = atoi(v);\
+    return;\
+}
+
+#define PARSE_STR(field)\
+if (!strcmp(k, #field)){\
+    mbstowcs(settings.field, v, 256);\
+    return;\
+}
+
+static void LoadSettings() {
+    
+    FILE* file = OpenTextFile(L"settings.ini");
+
+    char line[512];
+    while (fgets(line, sizeof(line), file)) {
+        char k[64], v[256];
+        if (sscanf(line, "%63s = %255s", k, v) != 2) continue;
+        if (k[0] == '#') continue;
+
+        PARSE_INT(font_size);
+        PARSE_INT(stream_count);
+        PARSE_INT(stream_speed);
+        PARSE_INT(vertical_spacing);
+        PARSE_INT(whitespace_length);
+        PARSE_INT(horizontal_stream_padding);
+        PARSE_INT(color_r);
+        PARSE_INT(color_g);
+        PARSE_INT(color_b);
+
+        PARSE_STR(file_name);
+        PARSE_STR(font_familly);
+        PARSE_STR(matrix_chars);
+
+        if (!strcmp(k, "lang"))
+            set_lang(v);
+    }
+    fclose(file);
+    return 1;
+}
+
 static BOOL InitTextSource(const wchar_t *filename)
 {
     text_source_file = OpenTextFile(filename);
