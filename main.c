@@ -11,15 +11,36 @@
 // #define DEBUG_CONSOLE
 // #define FULLSCREEN
 
-#define STREAM_COUNT 20
-#define STREAM_SPEED 500
+#define MAX_STREAM_SPEED 1000
+#define MAX_STREAM_COUNT 200
 #define MAX_STREAM_ROWS 2048
-#define FONT_SIZE -30
-#define FONT_FAMILY L"Ponomar"
-#define VERTICAL_SPACING 3
-#define WHITESPACE_LENGTH 15
 #define FALLBACK_WHITESPACE_WIDTH 12
 #define HORIZONTAL_STREAM_PADDING 10
+
+enum Language {
+    EN,
+    LA,
+    GR,
+    JP,
+    CSL,
+    AKK,
+};
+
+typedef struct {
+    enum Language lang;
+    wchar_t *file_name;
+    wchar_t *font_familly;
+    wchar_t *matrix_chars;    
+    int font_size;
+    int stream_count;
+    int stream_speed;
+    int vertical_spacing;
+    int whitespace_length;
+    int horizontal_stream_padding;
+    int color_r;
+    int color_g;
+    int color_b;
+} Settings;
 
 typedef struct {
     wchar_t value;
@@ -48,21 +69,27 @@ typedef struct {
 
 static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
 
-// The input file shall start with a whitespace to work correctly
+static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
+static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+static const wchar_t CSL_MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
+static const wchar_t JP_MATRIX_CHARS[] =
+    L"アイウエオカキクケコサシスセソ"
+    L"タチツテトナニヌネノハヒフヘホ"
+    L"マミムメモヤユヨラリルレロワン";
+static const wchar_t AKK_MATRIX_CHARS[] =
+    L"\U0001202D\U00012000\U00012157\U000121A4\U00012153\U00012079\U0001230C\U00012097\U0001222C\U00012200"
+    L"\U00012250\U00012040\U0001227A\U00012248\U000122E2\U0001236A\U0001223E\U00012223\U00012261\U000121B7"
+    L"\U00012038\U00012337\U000120E2\U00012054\U000120F6\U00012108\U0001212C\U00012034\U000122DB\U000122DE"
+    L"\U000122B9\U0001213F\U00012140\U00012317\U000122A0\U0001224C\U00012258\U000122C3\U000122FD\U000122FB"
+    L"\U0001231D\U00012328\U0001232A\U0001235C\U00012005\U00012009\U0001200B\U0001201D\U0001202A\U0001202E"
+    L"\U00012039\U00012044\U00012047\U00012048\U00012055\U0001205E\U00012068\U0001207A\U0001208D\U0001209B"
+    L"\U000120C0\U000120E4\U00012111\U0001212D\U00012134\U00012137\U000121A0\U000121B4\U000121C4\U0001221B"
+    L"\U00012239\U00012240\U0001227E\U0001228C\U00012295\U000122B7\U000122CF\U000122D4\U000122E9\U0001230B"
+    L"\U00012311\U0001232B\U0001233D\U00012347\U0001235F\U0001236E\U0001200F\U000120A0\U000120B7\U000120FB"
+    L"\U00012139\U00012174\U000121F7\U00012228\U0001225C\U00012293\U00012325\U0001233B\U0001235A\U0001236D";
 
-// static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-// static const wchar_t TEXT_SOURCE_FILE[] = L"latin.txt";
 
-// static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
-// static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
-
-// static const wchar_t MATRIX_CHARS[] =
-//     L"アイウエオカキクケコサシスセソ"
-//     L"タチツテトナニヌネノハヒフヘホ"
-//     L"マミムメモヤユヨラリルレロワン";
-
-static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
-static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
 static const wchar_t DIACRITICS[] = { 
     0x0300,  // COMBINING GRAVE ACCENT
     0x0301,  // COMBINING ACUTE ACCENT
@@ -94,11 +121,27 @@ static const wchar_t OMIT_SYMBOLS[] = {
     0xA67E,     // CYRILLIC KAVYKA (꙾) -- these actually shall be cleaned up
     0x005B,     // Left square bracket ([)
     0x005D,     // Right square bracket (])
-    0x2424,  // Newline symbol
+    0x2424,     // Newline symbol
     L'\0'
 };
 
-static Stream streams[STREAM_COUNT];
+static Settings settings = {
+    .lang = CSL,
+    .file_name = L"psalter.txt",
+    .font_familly = L"Ponomar",
+    .matrix_chars =  L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ",
+    .font_size = 30,
+    .stream_count = 20,
+    .stream_speed = 700,
+    .vertical_spacing = 3,
+    .whitespace_length = 15,
+    .horizontal_stream_padding = 10,
+    .color_r = 255,
+    .color_g = 0,
+    .color_b = 0,
+};
+
+static Stream streams[MAX_STREAM_COUNT];
 static int streams_initialized = 0;
 
 static HFONT stream_font = NULL;
@@ -159,7 +202,7 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
         if (sc->width < 1) {
             sc->width = FALLBACK_WHITESPACE_WIDTH;
         }
-        sc->height = WHITESPACE_LENGTH;
+        sc->height = settings.whitespace_length;
         sc->base_width = sc->width;
         sc->base_offset_y = 0;
         sc->dia1_offset_y = 0;
@@ -188,7 +231,7 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
         dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
     }
 
-    int height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
+    int height = max((int)ch_gm.gmBlackBoxY + dia_h + settings.vertical_spacing, 1);
 
     sc->width = max(w, 1);
     sc->height = height;
@@ -426,7 +469,7 @@ static BOOL InitFontMetrics(HWND hwnd)
 {
     if (stream_font == NULL) {
         stream_font = CreateFontW(
-            FONT_SIZE,
+            settings.font_size * (-1),
             0,
             0,
             0,
@@ -439,7 +482,7 @@ static BOOL InitFontMetrics(HWND hwnd)
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            FONT_FAMILY
+            settings.font_familly
         );
 
         if (stream_font == NULL) {
@@ -512,7 +555,7 @@ static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_widt
     int cand_left = cand_x;
     int cand_right = cand_x + cand_width;
 
-    for (int i = 0; i < STREAM_COUNT; ++i) {
+    for (int i = 0; i < settings.stream_count; ++i) {
         const Stream *other = &streams[i];
         if (other == stream || !other->active) {
             continue;
@@ -599,7 +642,7 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
 
 static void InitStreams(HDC hdc, int screen_width, int screen_height)
 {
-    int initial_count = STREAM_COUNT;
+    int initial_count = settings.stream_count;
 
     for (int i = 0; i < initial_count; ++i) {
         if (!SpawnStream(hdc, &streams[i], screen_width, screen_height)) {
@@ -608,7 +651,7 @@ static void InitStreams(HDC hdc, int screen_width, int screen_height)
         }
     }
 
-    for (int i = initial_count; i < STREAM_COUNT; ++i) {
+    for (int i = initial_count; i < settings.stream_count; ++i) {
         streams[i].active = 0;
         streams[i].spawn_delay = 10 + rand() % 41;
     }
@@ -626,7 +669,7 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
         InitStreams(hdc, screen_width, screen_height);
     }
 
-    for (int i = 0; i < STREAM_COUNT; ++i) {
+    for (int i = 0; i < settings.stream_count; ++i) {
         Stream *stream = &streams[i];
 
         if (!stream->active) {
@@ -725,7 +768,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
     SetBkMode(draw_dc, TRANSPARENT);
 
-    for (int i = 0; i < STREAM_COUNT; ++i) {
+    for (int i = 0; i < settings.stream_count; ++i) {
         const Stream *stream = &streams[i];
 
         if (!stream->active) {
@@ -842,14 +885,16 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
-            InitTextSource(TEXT_SOURCE_FILE);
+            InitTextSource(settings.file_name);
 
             if (!InitFontMetrics(hwnd)) {
                 CleanupTextSource();
                 return -1;
             }
 
-            if (SetTimer(hwnd, 1, STREAM_SPEED, NULL) == 0) {
+            int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
+
+            if (SetTimer(hwnd, 1, stream_speed, NULL) == 0) {
                 CleanupFont();
                 CleanupTextSource();
                 return -1;
