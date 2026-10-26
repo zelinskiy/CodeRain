@@ -136,6 +136,22 @@ static int GetCharacterWidth(HDC hdc, wchar_t ch)
     return ch_width;
 }
 
+static void AdHocCharFixes(StreamCharacter *sc){
+    if (sc->value == L'ц') {
+        sc->height -= 10;
+    } else if (sc->value == L'р') {
+        sc->height -= 5;
+    }
+
+    // с/д titlovannoe
+    if (sc->diacritic1 == 0x2DE3 || sc->diacritic1 == 0x2DED) {
+        sc->dia1_offset_y += 3;
+        sc->dia2_offset_y += 3;
+        sc->base_offset_y += 4;
+        sc->height += 3;
+    }
+}
+
 static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
 {
     if (sc->value == L' ') {
@@ -154,45 +170,25 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     GLYPHMETRICS ch_gm = GetCharacterDimensions(hdc, sc->value);
     int ch_w = GetCharacterWidth(hdc, sc->value);
     int w = max(ch_w, (int)ch_gm.gmBlackBoxX);
-
     int dia_h = 0;
     int dia1_y = 0;
     int dia2_y = 0;
 
-    if (sc->diacritic1 != L'\0' && sc->diacritic2 != L'\0') {
-        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
-        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
-        dia_h = max((int)d1.gmBlackBoxY, (int)d2.gmBlackBoxY);
-        w = max(w, ch_w + max((int)d1.gmBlackBoxX, (int)d2.gmBlackBoxX));
-        dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
-        dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
-    } else if (sc->diacritic1 != L'\0') {
+    if(sc->diacritic1 != L'\0') {
         GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
         dia_h = (int)d1.gmBlackBoxY;
         w = max(w, ch_w + (int)d1.gmBlackBoxX);
         dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
-    } else if (sc->diacritic2 != L'\0') {
+    }
+    
+    if (sc->diacritic2 != L'\0') {
         GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
-        dia_h = (int)d2.gmBlackBoxY;
+        dia_h = max(dia_h, (int)d2.gmBlackBoxY);
         w = max(w, ch_w + (int)d2.gmBlackBoxX);
         dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
     }
 
     int height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
-
-    // Some ad-hoc fixes for particular cases
-    if (sc->value == L'ц') {
-        height -= 10;
-    } else if (sc->value == L'р') {
-        height -= 5;
-    }
-
-    if (sc->diacritic1 == 0x2DE3 || sc->diacritic1 == 0x2DED) {
-        dia1_y += 3;
-        dia2_y += 3;
-        dia_h += 4;
-        height += 3;
-    }
 
     sc->width = max(w, 1);
     sc->height = height;
@@ -200,6 +196,8 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     sc->base_offset_y = dia_h + ch_gm.gmptGlyphOrigin.y;
     sc->dia1_offset_y = dia1_y;
     sc->dia2_offset_y = dia2_y;
+
+    AdHocCharFixes(sc);
 }
 
 static FILE *OpenTextFile(const wchar_t *filename)
