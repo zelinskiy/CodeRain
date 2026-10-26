@@ -101,6 +101,7 @@ static const wchar_t DIACRITICS[] = {
     0x2DE3,  // COMBINING CYRILLIC LETTER DE
     0x2DED,  // COMBINING CYRILLIC LETTER ES
     0x0487,  // COMBINING CYRILLIC POKRYTIE
+    L'\0'
 }; 
 static const wchar_t OMIT_SYMBOLS[] = {
     0x003A, 0x002C, 0x002E, 0x003B, 0x0021, 0x003F, 0x2014, 0x002D,
@@ -338,7 +339,8 @@ static void LoadSettings() {
     FILE* file = OpenTextFile(L"settings.ini");
 
     if(file == NULL) {
-        LogError("Cant open settings file\n");
+        LogError("Can't open settings file\n");
+        return;
     }
 
     // Just because custom matrix_chars could be quite long
@@ -512,11 +514,12 @@ static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
             dest[total_read].diacritics[0] = L'\0';
             total_read++;
         } else if (total_read > 0) {
-            StreamCharacter prev_ch = dest[total_read - 1];
+            StreamCharacter *prev_ch = &dest[total_read - 1];
             for(int d_i = 0; d_i < N_DIACRITICS; ++d_i){
-                if (prev_ch.diacritics[d_i] == L'\0') {
-                    prev_ch.diacritics[d_i+1] = ch;
-                    prev_ch.diacritics[d_i+1] = L'\0';
+                if (prev_ch->diacritics[d_i] == L'\0') {
+                    prev_ch->diacritics[d_i] = ch;
+                    prev_ch->diacritics[d_i+1] = L'\0';
+                    break;
                 }
             }
         }
