@@ -26,6 +26,7 @@
 
 enum Language {
     EN,
+    RU,
     LA,
     GR,
     JP,
@@ -81,6 +82,7 @@ static const wchar_t CLASS_NAME[] = L"Code Rain";
 static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
 static const wchar_t GR_MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+static const wchar_t RU_MATRIX_CHARS[] = L"АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ";
 static const wchar_t CSL_MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
 static const wchar_t JP_MATRIX_CHARS[] =
     L"アイウエオカキクケコサシスセソ"
@@ -188,25 +190,28 @@ static int GetCharacterWidth(HDC hdc, wchar_t ch)
 }
 
 static void AdHocCharFixes(StreamCharacter *sc){
-    if (sc->value == L'ц') {
-        sc->height -= 10;
-    } 
     
-    if (sc->value == L'р') {
-        sc->height -= 5;
-    }
+    if(settings.lang == CSL) {
+        if (sc->value == L'ц') {
+            sc->height -= 10;
+        } 
+        
+        if (sc->value == L'р') {
+            sc->height -= 5;
+        }   
 
-    for(int i=0; i<N_DIACRITICS; ++i){
-        wchar_t d = sc->diacritics[i];
-        if(d == L'\0') break;
+        for(int i=0; i<N_DIACRITICS; ++i){
+            wchar_t d = sc->diacritics[i];
+            if(d == L'\0') break;
 
-        // с/д titlovannoe
-        if (d == 0x2DE3 || d == 0x2DED) {
-            sc->diacritic_padding_top += 3;
-            sc->base_offset_y += 4;
-            sc->height += 3;
+            // с/д titlovannoe
+            if (d == 0x2DE3 || d == 0x2DED) {
+                sc->diacritic_padding_top += 3;
+                sc->base_offset_y += 4;
+                sc->height += 3;
+            }
         }
-    }    
+    }
 }
 
 static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
@@ -273,6 +278,7 @@ if (!strcmp(lang_code, #l)) {\
 
 static void SetLanguage(const char *lang_code) {
     TRY_LANG(EN);
+    TRY_LANG(RU);
     TRY_LANG(LA);
     TRY_LANG(GR);
     TRY_LANG(JP);
@@ -323,6 +329,9 @@ static void NormalizeSettings(){
             settings.min_stream_length = settings.max_stream_length - 1;
         }
     }
+    // settings.color_r %= 255;
+    // settings.color_g %= 255;
+    // settings.color_b %= 255;
 }
 
 static void LoadSettings() {

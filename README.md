@@ -3,7 +3,10 @@
 A minimal Matrix-style screensaver for Windows 11.
 
 ## TODO
-- add multiple default settings
+- find out why reading data from file peaks CPU usage (possibly fully read to RAM)
+- performance optimizations
+- also spawn above screen border?
+- add more example settings
 - settings validation with appropriate error messages (use alert windows)
 - installation readme section
 - windows screensaver params section

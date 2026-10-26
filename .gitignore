@@ -10,6 +10,7 @@
 *.idb
 *.sdf
 *.opensdf
+*.log
 
 # Visual Studio user-specific files
 .vs/
