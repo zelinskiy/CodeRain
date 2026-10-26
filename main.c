@@ -5,44 +5,103 @@
 #include <stdlib.h>
 #include <wchar.h>
 
-#define STREAM_COUNT 300
-#define STREAM_SPEED 100
+// Build:
+// cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
+
+// #define DEBUG_CONSOLE
+// #define FULLSCREEN
+
+#define STREAM_COUNT 20
+#define STREAM_SPEED 500
 #define MAX_STREAM_ROWS 2048
-#define MIN_TAIL_LENGTH 8
-#define MAX_TAIL_LENGTH 20
+#define FONT_SIZE -30
+#define FONT_FAMILY L"Ponomar"
+#define VERTICAL_SPACING 3
+#define WHITESPACE_LENGTH 15
+#define FALLBACK_WHITESPACE_WIDTH 12
+#define HORIZONTAL_STREAM_PADDING 10
+
+typedef struct {
+    wchar_t value;
+    wchar_t diacritic1;
+    wchar_t diacritic2;
+    int width;
+    int height;
+    int base_width;
+    int base_offset_y;
+    int dia1_offset_y;
+    int dia2_offset_y;
+} StreamCharacter;
 
 typedef struct {
     int active;
     int spawn_delay;
-    int column;
-    int head_row;
-    int length;
-    int visible_length;
-    wchar_t chars[MAX_STREAM_ROWS];
+    int x;
+    int start_y;
+    int head_row;        // Current head character index
+    int first_row;       // Current tail character index
+    int char_count;      // Total characters in this chunk
+    int max_width;       // Max width among characters in this chunk
+    int max_height;      // Total height of all characters in this chunk
+    StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
 
 static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
+
+// The input file shall start with a whitespace to work correctly
+
+// static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 // static const wchar_t TEXT_SOURCE_FILE[] = L"latin.txt";
-static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
+
+// static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+// static const wchar_t TEXT_SOURCE_FILE[] = L"greek.txt";
 
 // static const wchar_t MATRIX_CHARS[] =
 //     L"アイウエオカキクケコサシスセソ"
 //     L"タチツテトナニヌネノハヒフヘホ"
 //     L"マミムメモヤユヨラリルレロワン";
 
-// static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
-static const wchar_t MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-// static const wchar_t MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+static const wchar_t TEXT_SOURCE_FILE[] = L"psalter.txt";
+static const wchar_t MATRIX_CHARS[] = L"АБВГДЕЖЅЗИІКЛМНОПРСТѸФХѠЦЧШЩЪЫЬѢЮꙖѤѦѨѪѬѮѰѲѴѶ";
+static const wchar_t DIACRITICS[] = { 
+    0x0300,  // COMBINING GRAVE ACCENT
+    0x0301,  // COMBINING ACUTE ACCENT
+    0x0311,  // COMBINING INVERTED BREVE
+    0x033E,  // COMBINING VERTICAL TILDE
+    0x0483,  // COMBINING CYRILLIC TITLO
+    0x0486,  // COMBINING CYRILLIC PSILI PNEUMATA
+    0x2DE3,  // COMBINING CYRILLIC LETTER DE
+    0x2DED,  // COMBINING CYRILLIC LETTER ES
+    0x0487,  // COMBINING CYRILLIC POKRYTIE
+}; 
+static const wchar_t OMIT_SYMBOLS[] = {
+    0x003A,     // Colon (:)
+    0x002C,     // Comma (,)
+    0x002E,     // Full stop (.)
+    0x003B,     // Semicolon (;)
+    0x0021,     // Exclamation mark (!)
+    0x003F,     // Question mark (?)
+    0x2014,     // Em dash (—)
+    0x002D,     // Hyphen-minus (-)
+    0x0028,     // Left parenthesis (()
+    0x0029,     // Right parenthesis ())
+    0x00AB,     // Left-pointing double angle quotation mark («)
+    0x00BB,     // Right-pointing double angle quotation mark (»)
+    0x201C,     // Left double quotation mark (“)
+    0x201D,     // Right double quotation mark (”)
+    0x2018,     // Left single quotation mark (‘)
+    0x2019,     // Right single quotation mark (’)
+    0xA67E,     // CYRILLIC KAVYKA (꙾) -- these actually shall be cleaned up
+    0x005B,     // Left square bracket ([)
+    0x005D,     // Right square bracket (])
+    0x2424,  // Newline symbol
+    L'\0'
+};
 
 static Stream streams[STREAM_COUNT];
-static int stream_cell_width = 0;
-static int stream_cell_height = 0;
 static int streams_initialized = 0;
 
-// Font resource
 static HFONT stream_font = NULL;
-
-// Text source file stream
 static FILE *text_source_file = NULL;
 
 // Backbuffer
@@ -51,6 +110,95 @@ static HBITMAP backbuffer_bitmap = NULL;
 static HBITMAP backbuffer_old_bitmap = NULL;
 static int backbuffer_width = 0;
 static int backbuffer_height = 0;
+
+static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
+{
+    GLYPHMETRICS gm = { 0 };
+    if (ch == L'\0' || ch == L' ') {
+        return gm;
+    }
+    HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
+    MAT2 mat2 = { 
+        {0, 1}, {0, 0},
+        {0, 0}, {0, 1},
+    };
+    GetGlyphOutlineW(hdc, (UINT)ch, GGO_METRICS, &gm, 0, NULL, &mat2);
+    SelectObject(hdc, hOldFont);
+    return gm;
+}
+
+static int GetCharacterWidth(HDC hdc, wchar_t ch)
+{
+    int ch_width = 0;
+    HGDIOBJ hOldFont = SelectObject(hdc, stream_font);
+    GetCharWidth32W(hdc, ch, ch, &ch_width);
+    SelectObject(hdc, hOldFont);
+    return ch_width;
+}
+
+static void AdHocCharFixes(StreamCharacter *sc){
+    if (sc->value == L'ц') {
+        sc->height -= 10;
+    } else if (sc->value == L'р') {
+        sc->height -= 5;
+    }
+
+    // с/д titlovannoe
+    if (sc->diacritic1 == 0x2DE3 || sc->diacritic1 == 0x2DED) {
+        sc->dia1_offset_y += 3;
+        sc->dia2_offset_y += 3;
+        sc->base_offset_y += 4;
+        sc->height += 3;
+    }
+}
+
+static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
+{
+    if (sc->value == L' ') {
+        sc->width = GetCharacterWidth(hdc, L' ');
+        if (sc->width < 1) {
+            sc->width = FALLBACK_WHITESPACE_WIDTH;
+        }
+        sc->height = WHITESPACE_LENGTH;
+        sc->base_width = sc->width;
+        sc->base_offset_y = 0;
+        sc->dia1_offset_y = 0;
+        sc->dia2_offset_y = 0;
+        return;
+    }
+
+    GLYPHMETRICS ch_gm = GetCharacterDimensions(hdc, sc->value);
+    int ch_w = GetCharacterWidth(hdc, sc->value);
+    int w = max(ch_w, (int)ch_gm.gmBlackBoxX);
+    int dia_h = 0;
+    int dia1_y = 0;
+    int dia2_y = 0;
+
+    if(sc->diacritic1 != L'\0') {
+        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
+        dia_h = (int)d1.gmBlackBoxY;
+        w = max(w, ch_w + (int)d1.gmBlackBoxX);
+        dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
+    }
+    
+    if (sc->diacritic2 != L'\0') {
+        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
+        dia_h = max(dia_h, (int)d2.gmBlackBoxY);
+        w = max(w, ch_w + (int)d2.gmBlackBoxX);
+        dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
+    }
+
+    int height = max((int)ch_gm.gmBlackBoxY + dia_h + VERTICAL_SPACING, 1);
+
+    sc->width = max(w, 1);
+    sc->height = height;
+    sc->base_width = ch_w;
+    sc->base_offset_y = dia_h + ch_gm.gmptGlyphOrigin.y;
+    sc->dia1_offset_y = dia1_y;
+    sc->dia2_offset_y = dia2_y;
+
+    AdHocCharFixes(sc);
+}
 
 static FILE *OpenTextFile(const wchar_t *filename)
 {
@@ -121,19 +269,87 @@ static BOOL GetNextChar(FILE *fp, wchar_t *out_char)
     return TRUE;
 }
 
-static size_t ReadTextChars(wchar_t *dest, size_t count)
+static BOOL IsDiacritic(wchar_t ch)
 {
-    if (text_source_file == NULL || count == 0) {
+    for (size_t i = 0; DIACRITICS[i] != L'\0'; i++) {
+        if (DIACRITICS[i] == ch) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOL IsOmitSymbol(wchar_t ch)
+{
+    for (size_t i = 0; OMIT_SYMBOLS[i] != L'\0'; i++) {
+        if (OMIT_SYMBOLS[i] == ch) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOL IsChunkDelimiter(wchar_t ch)
+{
+    return (ch == L';' || ch == L':' || ch == L'.');
+}
+
+static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
+{
+    if (text_source_file == NULL || max_count == 0) {
         return 0;
     }
 
+    wchar_t ch;
+
+    // Skip leading whitespace, newlines, and delimiters from the previous chunk
+    for (;;) {
+        if (!GetNextChar(text_source_file, &ch)) {
+            return 0;
+        }
+        if (ch != L' ' && ch != L'\r' && ch != L'\n' && !IsChunkDelimiter(ch)) {
+            break;
+        }
+    }
+
     size_t total_read = 0;
-    while (total_read < count) {
-        wchar_t ch;
+    if (!IsOmitSymbol(ch) && !IsDiacritic(ch)) {
+        dest[total_read].value = ch;
+        dest[total_read].diacritic1 = L'\0';
+        dest[total_read].diacritic2 = L'\0';
+        total_read++;
+    }
+
+    while (total_read < max_count) {
         if (!GetNextChar(text_source_file, &ch)) {
             break;
         }
-        dest[total_read++] = ch;
+
+        if (IsChunkDelimiter(ch)) {
+            break;
+        }
+
+        if (IsOmitSymbol(ch)) {
+            continue;
+        }
+
+        if (!IsDiacritic(ch)) {
+            dest[total_read].value = ch;
+            dest[total_read].diacritic1 = L'\0';
+            dest[total_read].diacritic2 = L'\0';
+            total_read++;
+        } else if (total_read > 0) {
+            if (dest[total_read - 1].diacritic1 == L'\0') {
+                dest[total_read - 1].diacritic1 = ch;
+            } else if (dest[total_read - 1].diacritic2 == L'\0') {
+                dest[total_read - 1].diacritic2 = ch;
+            }
+        }
+    }
+
+    // Trim trailing whitespace if any
+    while (total_read > 0 && dest[total_read - 1].value == L' ') {
+        total_read--;
     }
 
     return total_read;
@@ -210,7 +426,7 @@ static BOOL InitFontMetrics(HWND hwnd)
 {
     if (stream_font == NULL) {
         stream_font = CreateFontW(
-            -24,
+            FONT_SIZE,
             0,
             0,
             0,
@@ -223,7 +439,7 @@ static BOOL InitFontMetrics(HWND hwnd)
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            L"Yu Gothic Mono"
+            FONT_FAMILY
         );
 
         if (stream_font == NULL) {
@@ -244,18 +460,7 @@ static BOOL InitFontMetrics(HWND hwnd)
     }
     ReleaseDC(hwnd, hdc);
 
-    if (!metrics_ok) {
-        return FALSE;
-    }
-
-    stream_cell_width = tm.tmAveCharWidth;
-    stream_cell_height = tm.tmHeight - tm.tmExternalLeading 
-        - tm.tmInternalLeading - tm.tmDescent;
-
-    if (stream_cell_width < 1) stream_cell_width = 1;
-    if (stream_cell_height < 1) stream_cell_height = 1;
-
-    return TRUE;
+    return metrics_ok;
 }
 
 static void CleanupFont(void)
@@ -266,111 +471,125 @@ static void CleanupFont(void)
     }
 }
 
-static void GetGridDimensions(HWND hwnd, int *out_columns, int *out_rows)
+static RECT GetStreamRect(const Stream *stream)
 {
-    RECT client_rect;
-    GetClientRect(hwnd, &client_rect);
-
-    int cols = 1;
-    int rows = 1;
-
-    if (stream_cell_width > 0) {
-        cols = client_rect.right / stream_cell_width;
-    }
-    if (stream_cell_height > 0) {
-        rows = client_rect.bottom / stream_cell_height;
+    RECT r = { 0, 0, 0, 0 };
+    if (!stream->active) {
+        return r;
     }
 
-    if (cols < 1) cols = 1;
-    if (rows < 1) rows = 1;
+    r.left = stream->x;
+    r.right = stream->x + stream->max_width;
 
-    if (cols > MAX_STREAM_ROWS) cols = MAX_STREAM_ROWS;
-    if (rows > MAX_STREAM_ROWS) rows = MAX_STREAM_ROWS;
+    int first_row = stream->first_row;
+    int last_row = stream->head_row;
+    if (last_row >= stream->char_count) {
+        last_row = stream->char_count - 1;
+    }
 
-    *out_columns = cols;
-    *out_rows = rows;
+    if (first_row > last_row) {
+        r.top = stream->start_y;
+        r.bottom = stream->start_y;
+        return r;
+    }
+
+    int y = stream->start_y;
+    for (int i = 0; i < first_row && i < stream->char_count; ++i) {
+        y += stream->chars[i].height;
+    }
+    r.top = y;
+
+    for (int i = first_row; i <= last_row && i < stream->char_count; ++i) {
+        y += stream->chars[i].height;
+    }
+    r.bottom = y;
+
+    return r;
 }
 
-static BOOL CheckOccupied(Stream *stream, int column, int rows, int head_row, int length)
+static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_width)
 {
-    int first_row = head_row - length + 1;
-    if (first_row < 0) {
-        first_row = 0;
-    }
+    int cand_left = cand_x;
+    int cand_right = cand_x + cand_width;
 
     for (int i = 0; i < STREAM_COUNT; ++i) {
         const Stream *other = &streams[i];
-
-        if (other == stream || !other->active ||
-            other->column != column) {
+        if (other == stream || !other->active) {
             continue;
         }
 
-        int other_first = other->head_row - other->length + 1;
-        if (other_first < 0) {
-            other_first = 0;
-        }
-
-        int other_last = other->head_row;
-        if (other_last >= rows) {
-            other_last = rows - 1;
-        }
-
-        if (other_last >= 0 &&
-            first_row <= other_last &&
-            head_row >= other_first) {
+        // Horizontal lane overlap check with padding
+        if (cand_right + HORIZONTAL_STREAM_PADDING > other->x &&
+            other->x + other->max_width + HORIZONTAL_STREAM_PADDING > cand_left) {
             return TRUE;
         }
     }
     return FALSE;
 }
 
-static BOOL SpawnStream(Stream *stream, int columns, int rows)
+static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_height)
 {
-    if (columns <= 0 || rows <= 0) {
+    if (screen_width <= 0 || screen_height <= 0) {
         return FALSE;
     }
 
-    const int char_count =
-        (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+    memset(stream->chars, 0, sizeof(stream->chars));
 
-    // Try several random positions before giving up.
-    for (int attempt = 0; attempt < columns * 4; ++attempt) {
-        const int column = rand() % columns;
-        const int length = MIN_TAIL_LENGTH + rand() % (MAX_TAIL_LENGTH - MIN_TAIL_LENGTH);
-        const int head_row = rand() % rows;
+    size_t grabbed = 0;
+    if (text_source_file != NULL) {
+        grabbed = ReadTextChunk(stream->chars, MAX_STREAM_ROWS);
+    }
 
-        if (CheckOccupied(stream, column, rows, head_row, length)) {
+    if (grabbed == 0) {
+        const int char_count = (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
+        grabbed = 25 + rand() % 25;
+        for (size_t k = 0; k < grabbed; ++k) {
+            stream->chars[k].value = MATRIX_CHARS[rand() % char_count];
+            stream->chars[k].diacritic1 = L'\0';
+            stream->chars[k].diacritic2 = L'\0';
+        }
+    }
+
+    int accum_h = 0;
+    int max_w = 0;
+
+    for (size_t i = 0; i < grabbed; ++i) {
+        MeasureStreamCharacter(hdc, &stream->chars[i]);
+        accum_h += stream->chars[i].height;
+        if (stream->chars[i].width > max_w) {
+            max_w = stream->chars[i].width;
+        }
+    }
+
+    stream->char_count = (int)grabbed;
+    stream->max_width = max(max_w, 1);
+    stream->max_height = accum_h;
+
+    int max_x = screen_width - stream->max_width;
+    if (max_x < 1) {
+        max_x = 1;
+    }
+
+    int max_y = screen_height - 60;
+    if (max_y < 1) {
+        max_y = 1;
+    }
+
+    // Try several random positions across the screen before giving up
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        const int cand_x = rand() % max_x;
+        const int cand_y = rand() % max_y;
+
+        if (CheckStreamCollision(stream, cand_x, stream->max_width)) {
             continue;
         }
 
-        stream->column = column;
-        stream->head_row = head_row;
-        stream->length = length;
-        stream->visible_length = 1;
+        stream->x = cand_x;
+        stream->start_y = cand_y;
+        stream->head_row = 0;
+        stream->first_row = 0;
         stream->active = 1;
         stream->spawn_delay = 0;
-
-        memset(stream->chars, 0, sizeof(stream->chars));
-
-        int needed = rows - head_row;
-        if (needed < 1) needed = 1;
-        if (head_row + needed > MAX_STREAM_ROWS) {
-            needed = MAX_STREAM_ROWS - head_row;
-        }
-
-        if (text_source_file != NULL) {
-            size_t grabbed = ReadTextChars(&stream->chars[head_row], (size_t)needed);
-            if (grabbed < (size_t)needed) {
-                for (size_t k = grabbed; k < (size_t)needed; ++k) {
-                    stream->chars[head_row + k] = MATRIX_CHARS[rand() % char_count];
-                }
-            }
-        } else {
-            for (int r = head_row; r < head_row + needed; ++r) {
-                stream->chars[r] = MATRIX_CHARS[rand() % char_count];
-            }
-        }
 
         return TRUE;
     }
@@ -378,23 +597,17 @@ static BOOL SpawnStream(Stream *stream, int columns, int rows)
     return FALSE;
 }
 
-static void InitStreams(int columns, int rows)
+static void InitStreams(HDC hdc, int screen_width, int screen_height)
 {
     int initial_count = STREAM_COUNT;
 
-    if (initial_count > columns) {
-        initial_count = columns;
-    }
-
-    /* Start the first group immediately. */
     for (int i = 0; i < initial_count; ++i) {
-        if (!SpawnStream(&streams[i], columns, rows)) {
+        if (!SpawnStream(hdc, &streams[i], screen_width, screen_height)) {
             streams[i].active = 0;
             streams[i].spawn_delay = 1 + rand() % 20;
         }
     }
 
-    /* Schedule the remaining streams for later. */
     for (int i = initial_count; i < STREAM_COUNT; ++i) {
         streams[i].active = 0;
         streams[i].spawn_delay = 10 + rand() % 41;
@@ -403,18 +616,15 @@ static void InitStreams(int columns, int rows)
     streams_initialized = 1;
 }
 
-static void UpdateStreams(int columns, int rows)
+static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
 {
-    if (columns < 1 || rows < 1) {
+    if (screen_width < 1 || screen_height < 1) {
         return;
     }
 
     if (!streams_initialized) {
-        InitStreams(columns, rows);
+        InitStreams(hdc, screen_width, screen_height);
     }
-
-    const int char_count =
-        (int)(sizeof(MATRIX_CHARS) / sizeof(MATRIX_CHARS[0])) - 1;
 
     for (int i = 0; i < STREAM_COUNT; ++i) {
         Stream *stream = &streams[i];
@@ -425,34 +635,40 @@ static void UpdateStreams(int columns, int rows)
             }
 
             if (stream->spawn_delay == 0) {
-                if (!SpawnStream(stream, columns, rows)) {
-                    /* Retry when a column becomes available. */
-                    stream->spawn_delay = 10;
+                if (!SpawnStream(hdc, stream, screen_width, screen_height)) {
+                    stream->spawn_delay = 5;
                 }
             }
 
             continue;
         }
 
-        ++stream->head_row;
-
-        if (stream->head_row < rows &&
-            stream->head_row < MAX_STREAM_ROWS) {
-            if (stream->chars[stream->head_row] == L'\0') {
-                if (text_source_file != NULL) {
-                    ReadTextChars(&stream->chars[stream->head_row], 1);
-                } else {
-                    stream->chars[stream->head_row] =
-                        MATRIX_CHARS[rand() % char_count];
-                }
-            }
+        // Calculate Y position of the bottom of the current head character
+        int head_bottom_y = stream->start_y;
+        for (int r = 0; r <= stream->head_row && r < stream->char_count; ++r) {
+            head_bottom_y += stream->chars[r].height;
         }
 
-        if (stream->visible_length < stream->length) {
-            ++stream->visible_length;
+        // Check if head can still advance down
+        BOOL head_can_advance = (head_bottom_y < screen_height) && 
+                                (stream->head_row + 1 < stream->char_count);
+
+        if (head_can_advance) {
+            ++stream->head_row;
+        } else {
+            ++stream->first_row;
         }
 
-        if (stream->head_row - stream->length + 1 >= rows) {
+        // Calculate Y position of the top of the tail character (first_row)
+        int tail_top_y = stream->start_y;
+        for (int r = 0; r < stream->first_row && r < stream->char_count; ++r) {
+            tail_top_y += stream->chars[r].height;
+        }
+
+        // If tail has run off the bottom of the screen OR passed all characters:
+        if (stream->first_row > stream->head_row || 
+            stream->first_row >= stream->char_count || 
+            tail_top_y >= screen_height) {
             stream->active = 0;
             stream->spawn_delay = 1 + rand() % 20;
         }
@@ -461,23 +677,11 @@ static void UpdateStreams(int columns, int rows)
 
 static void InvalidateStream(HWND hwnd, const Stream *stream)
 {
-    if (stream_cell_width <= 0 || stream_cell_height <= 0) {
+    if (!stream->active) {
         return;
     }
 
-    RECT rect;
-
-    rect.left = stream->column * stream_cell_width;
-    rect.right = rect.left + stream_cell_width + 1;
-
-    int first_row = stream->head_row - stream->length + 1;
-    if (first_row < 0) {
-        first_row = 0;
-    }
-
-    rect.top = first_row * stream_cell_height;
-    rect.bottom = (stream->head_row + 1) * stream_cell_height;
-
+    RECT rect = GetStreamRect(stream);
     InvalidateRect(hwnd, &rect, FALSE);
 }
 
@@ -521,59 +725,86 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
     SetBkMode(draw_dc, TRANSPARENT);
 
-    if (stream_cell_width > 0 && stream_cell_height > 0) {
-        for (int i = 0; i < STREAM_COUNT; ++i) {
-            const Stream *stream = &streams[i];
+    for (int i = 0; i < STREAM_COUNT; ++i) {
+        const Stream *stream = &streams[i];
 
-            if (!stream->active) {
+        if (!stream->active) {
+            continue;
+        }
+
+        if (stream->x >= paint_rect->right ||
+            stream->x + stream->max_width <= paint_rect->left) {
+            continue;
+        }
+
+        int first_row = stream->first_row;
+        int last_row = stream->head_row;
+        if (last_row >= stream->char_count) {
+            last_row = stream->char_count - 1;
+        }
+
+        if (first_row > last_row) {
+            continue;
+        }
+
+        int offset_y = stream->start_y;
+        for (int r = 0; r < first_row && r < stream->char_count; ++r) {
+            offset_y += stream->chars[r].height;
+        }
+
+        int count_visible = last_row - first_row + 1;
+        if (count_visible < 1) count_visible = 1;
+
+        for (int row = first_row; row <= last_row; ++row) {
+            if (offset_y >= paint_rect->bottom) {
+                break;
+            }
+
+            const int distance = stream->head_row - row;
+            int red = 255 - distance * 200 / count_visible;
+            if (red < 40) red = 40;
+            if (red > 255) red = 255;
+
+            SetTextColor(draw_dc, RGB(red, 0, 0));
+
+            const StreamCharacter *sc = &stream->chars[row];
+
+            if (sc->value == L' ') {
+                offset_y += sc->height;
                 continue;
             }
 
-            const int stream_x = stream->column * stream_cell_width;
+            int ch_offset_x = (stream->max_width - sc->base_width) / 2;
 
-            if (stream_x >= paint_rect->right ||
-                stream_x + stream_cell_width <= paint_rect->left) {
-                continue;
-            }
-
-            int first_row = 
-                stream->head_row - stream->visible_length + 1;
-
-            if (first_row < 0) {
-                first_row = 0;
-            }
-
-            const int visible_first_row =
-                paint_rect->top / stream_cell_height;
-
-            const int visible_last_row =
-                (paint_rect->bottom - 1) / stream_cell_height;
-
-            if (first_row < visible_first_row) {
-                first_row = visible_first_row;
-            }
-
-            int last_row = stream->head_row;
-
-            if (last_row > visible_last_row) {
-                last_row = visible_last_row;
-            }
-
-            for (int row = first_row; row <= last_row; ++row) {
-                const int distance = stream->head_row - row;
-                const int green =
-                    255 - distance * 200 / stream->visible_length;
-
-                SetTextColor(draw_dc, RGB(0, green, 0));
-
+            if (sc->diacritic1 != L'\0') {
                 TextOutW(
                     draw_dc,
-                    stream_x,
-                    row * stream_cell_height,
-                    &stream->chars[row],
+                    stream->x + ch_offset_x + sc->base_width,
+                    offset_y + sc->dia1_offset_y,
+                    &sc->diacritic1,
                     1
                 );
             }
+
+            if (sc->diacritic2 != L'\0') {
+                TextOutW(
+                    draw_dc,
+                    stream->x + ch_offset_x + sc->base_width,
+                    offset_y + sc->dia2_offset_y,
+                    &sc->diacritic2,
+                    1
+                );
+            }
+
+            TextOutW(
+                draw_dc,
+                stream->x + ch_offset_x,
+                offset_y + sc->base_offset_y,
+                &sc->value,
+                1
+            );
+
+            offset_y += sc->height;
         }
     }
 
@@ -627,10 +858,11 @@ static LRESULT CALLBACK WindowProc(
         }       
         case WM_TIMER:
         {
-            int columns = 0;
-            int rows = 0;
-            GetGridDimensions(hwnd, &columns, &rows);
-            UpdateStreams(columns, rows);
+            RECT client_rect;
+            GetClientRect(hwnd, &client_rect);
+            HDC hdc = GetDC(hwnd);
+            UpdateStreams(hdc, client_rect.right, client_rect.bottom);
+            ReleaseDC(hwnd, hdc);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
@@ -684,6 +916,25 @@ int WINAPI WinMain(
         return 1;
     }
 
+    #ifdef FULLSCREEN
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    HWND hwnd = CreateWindowExW(
+        0,
+        CLASS_NAME,
+        L"Matrix Screensaver",
+        WS_POPUP | WS_VISIBLE,
+        0, 
+        0,
+        screenWidth,
+        screenHeight,
+        NULL, 
+        NULL, 
+        hInstance, 
+        NULL
+    );
+    #else
     HWND hwnd = CreateWindowExW(
         0,
         CLASS_NAME,
@@ -696,7 +947,9 @@ int WINAPI WinMain(
         NULL,
         NULL,
         hInstance,
-        NULL);
+        NULL
+    );
+    #endif
 
     if (hwnd == NULL)
     {
@@ -705,7 +958,13 @@ int WINAPI WinMain(
 
     ShowWindow(hwnd, SW_SHOW);
 
-    MSG msg;
+    #ifdef DEBUG_CONSOLE
+    AllocConsole();
+    FILE *console;
+    freopen_s(&console, "CONOUT$", "w", stdout);
+    #endif
+
+    MSG msg;    
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
     {

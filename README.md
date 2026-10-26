@@ -3,11 +3,16 @@
 A minimal Matrix-style screensaver for Windows 11.
 
 ## TODO
-- Split into separate procedures
-- rotators (single characters which change every tick)
-- various modes: 100% filled screen, gradual filling, console (?), etc.
-- User-defined: charset, font, cell_width, cell_height, etc.
-- User-defined source of streams: books, quotes, etc.
+- csl: aspiration overlaps with accent
+- csl: circumflexus centering
+- csl: fix accented оук letter
+- csl: negative top spacing for accented ять
+- csl: цы/рцы + аз, ...: can add negative bottom spacing for them
+- csl: fix capital letters (or just convert them to lowercase?)
+- read characters until the end of word
+- User-defined settings file: charset, font, cell_width, cell_height, etc.
+- various modes: 100% filled screen, gradual filling, console (?), "Wake up, Neo...", etc.
+
 
 ## Tech stack
 
