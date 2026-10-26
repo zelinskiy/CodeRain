@@ -7,9 +7,11 @@
 #include <wchar.h>
 #include <string.h>
 #include <time.h>
+#include <scrnsave.h>
 
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
+// cl /std:c17 /W4 /TC /utf-8 main.c /Fecoderain.scr /link /SUBSYSTEM:WINDOWS scrnsavw.lib user32.lib gdi32.lib comctl32.lib
 
 // #define DEBUG_CONSOLE
 #define FULLSCREEN
@@ -1045,9 +1047,18 @@ static LRESULT CALLBACK WindowProc(
             PostQuitMessage(0);
             return 0;
         }
+        case WM_SETCURSOR:
+        {
+            SetCursor(NULL);
+            return TRUE;
+        }
         default:
             return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
+}
+
+BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
+    return TRUE;
 }
 
 int WINAPI WinMain(
