@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <wchar.h>
 #include <string.h>
+#include <time.h>
 
 // Build:
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
@@ -136,8 +137,27 @@ static int backbuffer_width = 0;
 static int backbuffer_height = 0;
 
 
-static void UserAlert(char *msg){
-    printf("Alert: %s\n", msg);
+static void LogError(const char *msg) {
+    if (!msg) return;
+
+    time_t t;
+    time(&t);
+    struct tm tm;
+    localtime_s(&tm, &t);
+    char tstr[32];
+    strftime(tstr, sizeof(tstr), "%Y-%m-%d %H:%M:%S", &tm);
+
+    FILE *fp;
+    if (fopen_s(&fp, "err.log", "a") == 0 && fp) {
+        size_t len = strlen(msg);
+        while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r')) len--;
+        fprintf(fp, "[%s] [ERROR] %.*s\n", tstr, (int)len, msg);
+        fclose(fp);
+    }
+#ifdef DEBUG_CONSOLE
+    printf("[%s] Alert: %s\n", tstr, msg);
+#endif
+
 }
 
 static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
@@ -238,7 +258,7 @@ static FILE *OpenTextFile(const wchar_t *filename)
 }
 
 #define TRY_LANG(l)\
-if (!strcmp(v, #l)) {\
+if (!strcmp(lang_code, #l)) {\
     settings.lang = l;\
     if (settings.matrix_chars[0] == L'\0') {\
         wcscpy_s(settings.matrix_chars,\
@@ -249,13 +269,16 @@ if (!strcmp(v, #l)) {\
     return;\
 }
 
-static void SetLanguage(const char *v) {
+static void SetLanguage(const char *lang_code) {
     TRY_LANG(EN);
     TRY_LANG(LA);
     TRY_LANG(GR);
     TRY_LANG(JP);
     TRY_LANG(CSL);
     TRY_LANG(AKK);
+    char err_msg[64];
+    snprintf(err_msg, sizeof(err_msg), "Unknown language code: %s", lang_code);
+    LogError(err_msg);
 }
 
 #define PARSE_INT(field)\
@@ -304,7 +327,7 @@ static void LoadSettings() {
     FILE* file = OpenTextFile(L"settings.ini");
 
     if(file == NULL) {
-        UserAlert("Cant open settings file\n");
+        LogError("Cant open settings file\n");
     }
 
     // Just because custom matrix_chars could be quite long
@@ -320,7 +343,7 @@ static void LoadSettings() {
         if (scan_res != 2){
             char err_msg[MAX_MATRIX_CHARS + 128];
             snprintf(err_msg, sizeof(err_msg), "Can't read setting: %s", line);
-            UserAlert(err_msg);
+            LogError(err_msg);
             continue;
         }
             
