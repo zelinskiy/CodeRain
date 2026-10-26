@@ -11,7 +11,7 @@
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 
 // #define DEBUG_CONSOLE
-// #define FULLSCREEN
+#define FULLSCREEN
 
 #define MAX_STREAM_SPEED 1000
 #define MAX_STREAM_COUNT 200
@@ -19,6 +19,7 @@
 #define MAX_STREAM_ROWS 2048
 #define FALLBACK_WHITESPACE_WIDTH 12
 #define HORIZONTAL_STREAM_PADDING 10
+#define N_DIACRITICS 8
 
 enum Language {
     EN,
@@ -50,14 +51,13 @@ typedef struct {
 
 typedef struct {
     wchar_t value;
-    wchar_t diacritic1;
-    wchar_t diacritic2;
+    wchar_t diacritics[N_DIACRITICS + 1];
     int width;
     int height;
     int base_width;
     int base_offset_y;
-    int dia1_offset_y;
-    int dia2_offset_y;
+    int diacritic_padding_top;
+    int diacritic_padding_bottom;
 } StreamCharacter;
 
 typedef struct {
@@ -65,15 +65,15 @@ typedef struct {
     int spawn_delay;
     int x;
     int start_y;
-    int head_row;        // Current head character index
-    int first_row;       // Current tail character index
-    int char_count;      // Total characters in this chunk
-    int max_width;       // Max width among characters in this chunk
-    int max_height;      // Total height of all characters in this chunk
+    int head_row; 
+    int first_row;
+    int char_count;
+    int max_width;
+    int max_height;
     StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
 
-static const wchar_t CLASS_NAME[] = L"MatrixScreensaverWindow";
+static const wchar_t CLASS_NAME[] = L"Code Rain";
 
 static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
@@ -98,27 +98,9 @@ static const wchar_t DIACRITICS[] = {
     0x0487,  // COMBINING CYRILLIC POKRYTIE
 }; 
 static const wchar_t OMIT_SYMBOLS[] = {
-    0x003A,     // Colon (:)
-    0x002C,     // Comma (,)
-    0x002E,     // Full stop (.)
-    0x003B,     // Semicolon (;)
-    0x0021,     // Exclamation mark (!)
-    0x003F,     // Question mark (?)
-    0x2014,     // Em dash (—)
-    0x002D,     // Hyphen-minus (-)
-    0x0028,     // Left parenthesis (()
-    0x0029,     // Right parenthesis ())
-    0x00AB,     // Left-pointing double angle quotation mark («)
-    0x00BB,     // Right-pointing double angle quotation mark (»)
-    0x201C,     // Left double quotation mark (“)
-    0x201D,     // Right double quotation mark (”)
-    0x2018,     // Left single quotation mark (‘)
-    0x2019,     // Right single quotation mark (’)
-    0xA67E,     // CYRILLIC KAVYKA (꙾) -- these actually shall be cleaned up
-    0x005B,     // Left square bracket ([)
-    0x005D,     // Right square bracket (])
-    0x2424,     // Newline symbol
-    L'\0'
+    0x003A, 0x002C, 0x002E, 0x003B, 0x0021, 0x003F, 0x2014, 0x002D,
+    0x0028, 0x0029, 0x00AB, 0x00BB, 0x201C, 0x201D, 0x2018, 0x2019,
+    0xA67E, 0x005B, 0x005D, 0x2424, L'\0'
 };
 
 static Settings settings = {
@@ -153,6 +135,11 @@ static HBITMAP backbuffer_old_bitmap = NULL;
 static int backbuffer_width = 0;
 static int backbuffer_height = 0;
 
+
+static void UserAlert(char *msg){
+    printf("Alert: %s\n", msg);
+}
+
 static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
 {
     GLYPHMETRICS gm = { 0 };
@@ -181,17 +168,23 @@ static int GetCharacterWidth(HDC hdc, wchar_t ch)
 static void AdHocCharFixes(StreamCharacter *sc){
     if (sc->value == L'ц') {
         sc->height -= 10;
-    } else if (sc->value == L'р') {
+    } 
+    
+    if (sc->value == L'р') {
         sc->height -= 5;
     }
 
-    // с/д titlovannoe
-    if (sc->diacritic1 == 0x2DE3 || sc->diacritic1 == 0x2DED) {
-        sc->dia1_offset_y += 3;
-        sc->dia2_offset_y += 3;
-        sc->base_offset_y += 4;
-        sc->height += 3;
-    }
+    for(int i=0; i<N_DIACRITICS; ++i){
+        wchar_t d = sc->diacritics[i];
+        if(d == L'\0') break;
+
+        // с/д titlovannoe
+        if (d == 0x2DE3 || d == 0x2DED) {
+            sc->diacritic_padding_top += 3;
+            sc->base_offset_y += 4;
+            sc->height += 3;
+        }
+    }    
 }
 
 static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
@@ -204,8 +197,7 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
         sc->height = settings.whitespace_length;
         sc->base_width = sc->width;
         sc->base_offset_y = 0;
-        sc->dia1_offset_y = 0;
-        sc->dia2_offset_y = 0;
+        sc->diacritic_padding_top = 0;
         return;
     }
 
@@ -213,31 +205,25 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     int ch_w = GetCharacterWidth(hdc, sc->value);
     int w = max(ch_w, (int)ch_gm.gmBlackBoxX);
     int dia_h = 0;
-    int dia1_y = 0;
-    int dia2_y = 0;
+    int dia_y = 0;
 
-    if(sc->diacritic1 != L'\0') {
-        GLYPHMETRICS d1 = GetCharacterDimensions(hdc, sc->diacritic1);
-        dia_h = (int)d1.gmBlackBoxY;
-        w = max(w, ch_w + (int)d1.gmBlackBoxX);
-        dia1_y = ch_gm.gmptGlyphOrigin.y + (int)d1.gmBlackBoxY;
+    for(int i=0; i<N_DIACRITICS; ++i){
+        wchar_t dia = sc->diacritics[i];
+        if(dia != L'\0') {
+            GLYPHMETRICS dia_gm = GetCharacterDimensions(hdc, dia);
+            dia_h = max(dia_h, (int)dia_gm.gmBlackBoxY);
+            w = max(w, ch_w + (int)dia_gm.gmBlackBoxX);
+            dia_y = max(dia_y, ch_gm.gmptGlyphOrigin.y + (int)dia_gm.gmBlackBoxY);
+        }
     }
     
-    if (sc->diacritic2 != L'\0') {
-        GLYPHMETRICS d2 = GetCharacterDimensions(hdc, sc->diacritic2);
-        dia_h = max(dia_h, (int)d2.gmBlackBoxY);
-        w = max(w, ch_w + (int)d2.gmBlackBoxX);
-        dia2_y = ch_gm.gmptGlyphOrigin.y + (int)d2.gmBlackBoxY;
-    }
-
     int height = max((int)ch_gm.gmBlackBoxY + dia_h + settings.vertical_spacing, 1);
 
     sc->width = max(w, 1);
     sc->height = height;
     sc->base_width = ch_w;
     sc->base_offset_y = dia_h + ch_gm.gmptGlyphOrigin.y;
-    sc->dia1_offset_y = dia1_y;
-    sc->dia2_offset_y = dia2_y;
+    sc->diacritic_padding_top = dia_y;
 
     AdHocCharFixes(sc);
 }
@@ -248,7 +234,6 @@ static FILE *OpenTextFile(const wchar_t *filename)
     if (_wfopen_s(&fp, filename, L"rb") == 0 && fp != NULL) {
         return fp;
     }
-
     return NULL;
 }
 
@@ -284,28 +269,64 @@ if (!strcmp(k, #field)) { \
     mbstowcs_s(&converted, settings.field, sizeof(settings.field) / sizeof(wchar_t), v, _TRUNCATE); \
 }
 
+static void NormalizeSettings(){
+    for(int i=0; i<MAX_MATRIX_CHARS; ++i){
+        if(settings.matrix_chars[i] == L'\0'){
+            break;
+        } 
+        settings.matrix_chars_count++;
+    }
+    if(settings.matrix_chars_count > MAX_MATRIX_CHARS) {
+        settings.matrix_chars_count = MAX_MATRIX_CHARS;
+    }
+    if(settings.stream_speed > MAX_STREAM_SPEED) {
+        settings.stream_speed = MAX_STREAM_SPEED;
+    }
+    if(settings.stream_count > MAX_STREAM_COUNT) {
+        settings.stream_count = MAX_STREAM_COUNT;
+    }
+    if(settings.max_stream_length == 0){
+        settings.max_stream_length = 1;
+    }
+    if(settings.max_stream_length > MAX_STREAM_ROWS) {
+        settings.max_stream_length = MAX_STREAM_ROWS;
+    }
+    if(settings.min_stream_length > settings.max_stream_length){
+        if(settings.max_stream_length == 1){
+            settings.min_stream_length = 1;
+        } else {
+            settings.min_stream_length = settings.max_stream_length - 1;
+        }
+    }
+}
+
 static void LoadSettings() {
-    printf("Loading settings\n");
     FILE* file = OpenTextFile(L"settings.ini");
 
     if(file == NULL) {
-        printf("Cant open settings file\n");
+        UserAlert("Cant open settings file\n");
     }
 
-    char line[2048];
+    // Just because custom matrix_chars could be quite long
+    char line[MAX_MATRIX_CHARS + 72];
     while (fgets(line, sizeof(line), file)) {
-        char k[64], v[256];
+        char k[64], v[MAX_MATRIX_CHARS];
         int scan_res = sscanf_s(
             line, 
             "%63s = %255[^\r\n]", 
             k, (unsigned)sizeof(k), 
             v, (unsigned)sizeof(v) 
         );
-        if (scan_res != 2) \
+        if (scan_res != 2){
+            char err_msg[MAX_MATRIX_CHARS + 128];
+            snprintf(err_msg, sizeof(err_msg), "Can't read setting: %s", line);
+            UserAlert(err_msg);
             continue;
+        }
+            
+        // skip comments
         if (k[0] == '#') 
             continue;
-        printf("%s = %s\n", k, v);
 
         PARSE_INT(font_size);
         PARSE_INT(stream_count);
@@ -327,25 +348,7 @@ static void LoadSettings() {
             SetLanguage(v);
     }
     fclose(file);
-
-    // Checking that all settings are safe
-    for(int i=0; i<MAX_MATRIX_CHARS; ++i){
-        if(settings.matrix_chars[i] == L'\0'){
-            break;
-        } 
-        settings.matrix_chars_count++;
-    }
-    if(settings.matrix_chars_count > MAX_MATRIX_CHARS) {
-        settings.matrix_chars_count = MAX_MATRIX_CHARS;
-    }
-    if(settings.stream_speed > MAX_STREAM_SPEED) {
-        settings.stream_speed = MAX_STREAM_SPEED;
-    }
-    if(settings.stream_count > MAX_STREAM_COUNT) {
-        settings.stream_count = MAX_STREAM_COUNT;
-    }
-
-    return;
+    NormalizeSettings();
 }
 
 static BOOL InitTextSource(const wchar_t *filename)
@@ -453,8 +456,7 @@ static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
     size_t total_read = 0;
     if (!IsOmitSymbol(ch) && !IsDiacritic(ch)) {
         dest[total_read].value = ch;
-        dest[total_read].diacritic1 = L'\0';
-        dest[total_read].diacritic2 = L'\0';
+        dest[total_read].diacritics[0] = L'\0';
         total_read++;
     }
 
@@ -473,14 +475,15 @@ static size_t ReadTextChunk(StreamCharacter *dest, size_t max_count)
 
         if (!IsDiacritic(ch)) {
             dest[total_read].value = ch;
-            dest[total_read].diacritic1 = L'\0';
-            dest[total_read].diacritic2 = L'\0';
+            dest[total_read].diacritics[0] = L'\0';
             total_read++;
         } else if (total_read > 0) {
-            if (dest[total_read - 1].diacritic1 == L'\0') {
-                dest[total_read - 1].diacritic1 = ch;
-            } else if (dest[total_read - 1].diacritic2 == L'\0') {
-                dest[total_read - 1].diacritic2 = ch;
+            StreamCharacter prev_ch = dest[total_read - 1];
+            for(int d_i = 0; d_i < N_DIACRITICS; ++d_i){
+                if (prev_ch.diacritics[d_i] == L'\0') {
+                    prev_ch.diacritics[d_i+1] = ch;
+                    prev_ch.diacritics[d_i+1] = L'\0';
+                }
             }
         }
     }
@@ -563,6 +566,7 @@ static BOOL EnsureBackbuffer(HDC reference_dc, int width, int height)
 static BOOL InitFontMetrics(HWND hwnd)
 {
     if (stream_font == NULL) {
+        // Negative font_size allows CreateFontW to adjust it if needed
         stream_font = CreateFontW(
             settings.font_size * (-1),
             0,
@@ -637,6 +641,7 @@ static RECT GetStreamRect(const Stream *stream)
     }
     r.top = y;
 
+    // Calculate in advance where stream will stop
     for (int i = first_row; i <= last_row && i < stream->char_count; ++i) {
         y += stream->chars[i].height;
     }
@@ -657,8 +662,9 @@ static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_widt
         }
 
         // Horizontal lane overlap check with padding
-        if (cand_right + HORIZONTAL_STREAM_PADDING > other->x &&
-            other->x + other->max_width + HORIZONTAL_STREAM_PADDING > cand_left) {
+        BOOL lr_check = cand_right + HORIZONTAL_STREAM_PADDING > other->x;
+        BOOL rl_check = other->x + other->max_width + HORIZONTAL_STREAM_PADDING > cand_left;
+        if (rl_check && lr_check) {
             return TRUE;
         }
     }
@@ -667,10 +673,6 @@ static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_widt
 
 static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_height)
 {
-    if (screen_width <= 0 || screen_height <= 0) {
-        return FALSE;
-    }
-
     memset(stream->chars, 0, sizeof(stream->chars));
 
     size_t grabbed = 0;
@@ -679,20 +681,21 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
     }
 
     if (grabbed == 0) {        
-        grabbed = settings.min_stream_length + rand() % (settings.min_stream_length - settings.max_stream_length);
+        grabbed = settings.min_stream_length 
+            + rand() % (settings.max_stream_length - settings.min_stream_length);
         for (size_t k = 0; k < grabbed; ++k) {
-            stream->chars[k].value = settings.matrix_chars[rand() % settings.matrix_chars_count];
-            stream->chars[k].diacritic1 = L'\0';
-            stream->chars[k].diacritic2 = L'\0';
+            int random_char_idx = rand() % settings.matrix_chars_count; 
+            stream->chars[k].value = settings.matrix_chars[random_char_idx];
+            stream->chars[k].diacritics[0] = L'\0';
         }
     }
 
-    int accum_h = 0;
+    int sum_h = 0;
     int max_w = 0;
 
     for (size_t i = 0; i < grabbed; ++i) {
         MeasureStreamCharacter(hdc, &stream->chars[i]);
-        accum_h += stream->chars[i].height;
+        sum_h += stream->chars[i].height;
         if (stream->chars[i].width > max_w) {
             max_w = stream->chars[i].width;
         }
@@ -700,17 +703,10 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
 
     stream->char_count = (int)grabbed;
     stream->max_width = max(max_w, 1);
-    stream->max_height = accum_h;
+    stream->max_height = sum_h;
 
-    int max_x = screen_width - stream->max_width;
-    if (max_x < 1) {
-        max_x = 1;
-    }
-
-    int max_y = screen_height - 60;
-    if (max_y < 1) {
-        max_y = 1;
-    }
+    int max_x = max(1, screen_width - stream->max_width);
+    int max_y = max(1, screen_height - 60);
 
     // Try several random positions across the screen before giving up
     for (int attempt = 0; attempt < 200; ++attempt) {
@@ -755,10 +751,6 @@ static void InitStreams(HDC hdc, int screen_width, int screen_height)
 
 static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
 {
-    if (screen_width < 1 || screen_height < 1) {
-        return;
-    }
-
     if (!streams_initialized) {
         InitStreams(hdc, screen_width, screen_height);
     }
@@ -786,11 +778,10 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
             head_bottom_y += stream->chars[r].height;
         }
 
-        // Check if head can still advance down
-        BOOL head_can_advance = (head_bottom_y < screen_height) && 
-                                (stream->head_row + 1 < stream->char_count);
+        BOOL can_go_down = (head_bottom_y < screen_height) && 
+                            (stream->head_row + 1 < stream->char_count);
 
-        if (head_can_advance) {
+        if (can_go_down) {
             ++stream->head_row;
         } else {
             ++stream->first_row;
@@ -802,10 +793,11 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
             tail_top_y += stream->chars[r].height;
         }
 
-        // If tail has run off the bottom of the screen OR passed all characters:
-        if (stream->first_row > stream->head_row || 
-            stream->first_row >= stream->char_count || 
-            tail_top_y >= screen_height) {
+        BOOL below_bottom = tail_top_y >= screen_height;
+        BOOL run_off_chars = stream->first_row > stream->head_row || 
+            stream->first_row >= stream->char_count;
+
+        if (below_bottom || run_off_chars) {
             stream->active = 0;
             stream->spawn_delay = 1 + rand() % 20;
         }
@@ -920,24 +912,17 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
             int ch_offset_x = (stream->max_width - sc->base_width) / 2;
 
-            if (sc->diacritic1 != L'\0') {
-                TextOutW(
-                    draw_dc,
-                    stream->x + ch_offset_x + sc->base_width,
-                    offset_y + sc->dia1_offset_y,
-                    &sc->diacritic1,
-                    1
-                );
-            }
-
-            if (sc->diacritic2 != L'\0') {
-                TextOutW(
-                    draw_dc,
-                    stream->x + ch_offset_x + sc->base_width,
-                    offset_y + sc->dia2_offset_y,
-                    &sc->diacritic2,
-                    1
-                );
+            for(int d_i = 0; d_i < N_DIACRITICS; ++d_i){
+                wchar_t d = sc->diacritics[d_i];
+                if (d != L'\0') {
+                    TextOutW(
+                        draw_dc,
+                        stream->x + ch_offset_x + sc->base_width,
+                        offset_y + sc->diacritic_padding_top,
+                        &d,
+                        1
+                    );
+                }
             }
 
             TextOutW(
@@ -994,9 +979,9 @@ static LRESULT CALLBACK WindowProc(
                 return -1;
             }
 
-            // int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
+            int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
 
-            if (SetTimer(hwnd, 1, settings.stream_speed, NULL) == 0) {
+            if (SetTimer(hwnd, 1, stream_speed, NULL) == 0) {
                 CleanupFont();
                 CleanupTextSource();
                 return -1;
@@ -1111,12 +1096,9 @@ int WINAPI WinMain(
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOW);    
 
-    
-
-    MSG msg;    
-
+    MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
     {
         TranslateMessage(&msg);

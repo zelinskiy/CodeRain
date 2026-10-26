@@ -3,6 +3,10 @@
 A minimal Matrix-style screensaver for Windows 11.
 
 ## TODO
+- add multiple default settings
+- settings validation with appropriate error messages (use alert windows)
+- installation readme section
+- windows screensaver params section
 - csl: aspiration overlaps with accent
 - csl: circumflexus centering
 - csl: fix accented оук letter
