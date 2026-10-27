@@ -746,7 +746,8 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
     stream->max_width = max(max_w, 1);
     stream->max_height = sum_h;
 
-    HMONITOR hMonitor = MonitorFromDC(hdc, MONITOR_DEFAULTTOPRIMARY);
+    HWND hwnd = WindowFromDC(hdc);
+    HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = { 0 };
     mi.cbSize = sizeof(MONITORINFO);
     GetMonitorInfoW(hMonitor, &mi);
@@ -777,12 +778,12 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
     return FALSE;
 }
 
-static void InitStreams(HDC hdc, int screen_width, int screen_height)
+static void InitStreams(HDC hdc)
 {
     int initial_count = settings.stream_count;
 
     for (int i = 0; i < initial_count; ++i) {
-        if (!SpawnStream(hdc, &streams[i], screen_width, screen_height)) {
+        if (!SpawnStream(hdc, &streams[i])) {
             streams[i].active = 0;
             streams[i].spawn_delay = 1 + rand() % 20;
         }
@@ -793,13 +794,13 @@ static void InitStreams(HDC hdc, int screen_width, int screen_height)
         streams[i].spawn_delay = 10 + rand() % 41;
     }
 
-    streams_initialized = 1;
+    ++streams_initialized;
 }
 
-static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
+static void UpdateStreams(HDC hdc)
 {
-    if (!streams_initialized) {
-        InitStreams(hdc, screen_width, screen_height);
+    if (streams_initialized < nmonitors) {
+        InitStreams(hdc);
     }
 
     for (int i = 0; i < settings.stream_count; ++i) {
@@ -811,7 +812,7 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
             }
 
             if (stream->spawn_delay == 0) {
-                if (!SpawnStream(hdc, stream, screen_width, screen_height)) {
+                if (!SpawnStream(hdc, stream)) {
                     stream->spawn_delay = 5;
                 }
             }
@@ -824,6 +825,11 @@ static void UpdateStreams(HDC hdc, int screen_width, int screen_height)
         for (int r = 0; r <= stream->head_row && r < stream->char_count; ++r) {
             head_bottom_y += stream->chars[r].height;
         }
+
+        MONITORINFO mi = { 0 };
+        mi.cbSize = sizeof(MONITORINFO);
+        GetMonitorInfoW(stream->monitor, &mi);
+        int screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
         BOOL can_go_down = (head_bottom_y < screen_height) && 
                             (stream->head_row + 1 < stream->char_count);
@@ -866,6 +872,8 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
     RECT client_rect;
     GetClientRect(hwnd, &client_rect);
 
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    
     const int width = client_rect.right;
     const int height = client_rect.bottom;
 
@@ -903,6 +911,10 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
     for (int i = 0; i < settings.stream_count; ++i) {
         const Stream *stream = &streams[i];
+
+        if(stream->monitor != monitor){
+            continue;
+        }
 
         if (!stream->active) {
             continue;
@@ -1038,7 +1050,7 @@ static LRESULT CALLBACK WindowProc(
             RECT client_rect;
             GetClientRect(hwnd, &client_rect);
             HDC hdc = GetDC(hwnd);
-            UpdateStreams(hdc, client_rect.right, client_rect.bottom);
+            UpdateStreams(hdc);
             ReleaseDC(hwnd, hdc);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
@@ -1095,15 +1107,6 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
         int y = mi.rcMonitor.top;
         int w = mi.rcMonitor.right - mi.rcMonitor.left;
         int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
-
-        CreateWindowExW(
-            WS_EX_TOPMOST,
-            L"MonitorWndClass",
-            L"",
-            WS_POPUP | WS_VISIBLE,
-            x, y, w, h,
-            NULL, NULL, hInstance, NULL
-        );
 
         HWND hwnd = CreateWindowExW(
             WS_EX_TOPMOST,
