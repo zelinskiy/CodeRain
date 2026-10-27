@@ -13,9 +13,6 @@
 // cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
 // cl /std:c17 /W4 /TC /utf-8 main.c /Fecoderain.scr /link /SUBSYSTEM:WINDOWS scrnsavw.lib user32.lib gdi32.lib comctl32.lib
 
-// #define DEBUG_CONSOLE
-#define FULLSCREEN
-
 #define MAX_STREAM_SPEED 1000
 #define MAX_STREAM_COUNT 200
 #define MAX_MATRIX_CHARS 512
@@ -82,6 +79,7 @@ typedef struct {
 
 static const wchar_t CLASS_NAME[] = L"Code Rain";
 
+static const wchar_t FALLBACK_MATRIX_CHARS[] = L"0";
 static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
 static const wchar_t GR_MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
@@ -133,6 +131,8 @@ static Settings settings = {
 
 static Stream streams[MAX_STREAM_COUNT * MAX_MONITORS];
 static int streams_initialized = 0;
+static BOOL resources_initialized = FALSE;
+static int nwindows = 0;
 static int nmonitors = 0;
 
 static HFONT stream_font = NULL;
@@ -163,10 +163,6 @@ static void LogError(const char *msg) {
         fprintf(fp, "[%s] [ERROR] %.*s\n", tstr, (int)len, msg);
         fclose(fp);
     }
-#ifdef DEBUG_CONSOLE
-    printf("[%s] Alert: %s\n", tstr, msg);
-#endif
-
 }
 
 static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
@@ -274,7 +270,7 @@ if (!strcmp(lang_code, #l)) {\
     settings.lang = l;\
     if (settings.matrix_chars[0] == L'\0') {\
         wcscpy_s(settings.matrix_chars,\
-            sizeof(settings.matrix_chars) / sizeof(wchar_t),\
+            MAX_MATRIX_CHARS,\
             l ## _MATRIX_CHARS\
         );\
     }\
@@ -306,14 +302,13 @@ if (!strcmp(k, #field)) { \
 }
 
 static void NormalizeSettings(){
-    for(int i=0; i<MAX_MATRIX_CHARS; ++i){
-        if(settings.matrix_chars[i] == L'\0'){
-            break;
-        } 
-        settings.matrix_chars_count++;
-    }    
-    if(settings.matrix_chars_count > MAX_MATRIX_CHARS) {
-        settings.matrix_chars_count = MAX_MATRIX_CHARS;
+    settings.matrix_chars_count = (int)wcsnlen_s(
+        settings.matrix_chars,
+        MAX_MATRIX_CHARS
+    );
+    if(settings.matrix_chars_count == 0) {
+        wcscpy_s(settings.matrix_chars, MAX_MATRIX_CHARS, FALLBACK_MATRIX_CHARS);
+        settings.matrix_chars_count = 1;
     }
     if(settings.stream_speed > MAX_STREAM_SPEED) {
         settings.stream_speed = MAX_STREAM_SPEED;
@@ -321,13 +316,17 @@ static void NormalizeSettings(){
     if(settings.stream_count > MAX_STREAM_COUNT) {
         settings.stream_count = MAX_STREAM_COUNT;
     }
+    if(settings.stream_count < 1){
+        settings.stream_count = 1;
+    }
     if(settings.max_stream_length == 0){
         settings.max_stream_length = 1;
     }
     if(settings.max_stream_length > MAX_STREAM_ROWS) {
         settings.max_stream_length = MAX_STREAM_ROWS;
     }
-    if(settings.min_stream_length > settings.max_stream_length){
+    
+    if(settings.min_stream_length >= settings.max_stream_length){
         if(settings.max_stream_length == 1){
             settings.min_stream_length = 1;
         } else {
@@ -415,38 +414,59 @@ static BOOL GetNextChar(FILE *fp, wchar_t *out_char)
     if (b1 == EOF) {
         rewind(fp);
         b1 = fgetc(fp);
-        // Prevent from dumb looping in an empty file
+
         if (b1 == EOF) {
             return FALSE;
         }
     }
 
     wchar_t ch;
+
     if ((b1 & 0x80) == 0) {
-        // 1-byte ASCII
-        ch = (wchar_t)b1;
-    } else if ((b1 & 0xE0) == 0xC0) {
-        // 2-byte UTF-8 sequence
-        int b2 = fgetc(fp);
-        if (b2 == EOF) { rewind(fp); b2 = fgetc(fp); }
-        ch = (wchar_t)(((b1 & 0x1F) << 6) | (b2 & 0x3F));
-    } else if ((b1 & 0xF0) == 0xE0) {
-        // 3-byte UTF-8 sequence
-        int b2 = fgetc(fp);
-        if (b2 == EOF) { rewind(fp); b2 = fgetc(fp); }
-        int b3 = fgetc(fp);
-        if (b3 == EOF) { rewind(fp); b3 = fgetc(fp); }
-        ch = (wchar_t)(((b1 & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F));
-    } else {
         ch = (wchar_t)b1;
     }
+    else if ((b1 & 0xE0) == 0xC0) {
+        int b2 = fgetc(fp);
 
-    // Skip UTF-8 BOM
+        if (b2 == EOF || (b2 & 0xC0) != 0x80) {
+            return FALSE;
+        }
+
+        ch = ((wchar_t)(b1 & 0x1F) << 6)
+           |  (wchar_t)(b2 & 0x3F);
+
+        if (ch < 0x80) {
+            return FALSE; // overlong encoding
+        }
+    }
+    else if ((b1 & 0xF0) == 0xE0) {
+        int b2 = fgetc(fp);
+        int b3 = fgetc(fp);
+
+        if (b2 == EOF || b3 == EOF ||
+            (b2 & 0xC0) != 0x80 ||
+            (b3 & 0xC0) != 0x80) {
+            return FALSE;
+        }
+
+        ch = ((wchar_t)(b1 & 0x0F) << 12)
+           | ((wchar_t)(b2 & 0x3F) << 6)
+           |  (wchar_t)(b3 & 0x3F);
+
+        if (ch < 0x800 || (ch >= 0xD800 && ch <= 0xDFFF)) {
+            return FALSE;
+        }
+    }
+    else {
+        return FALSE; 
+    }
+
+    // Skip BOM
     if (ch == 0xFEFF) {
         return GetNextChar(fp, out_char);
     }
 
-    *out_char = ch;
+    *out_char = (wchar_t)ch;
     return TRUE;
 }
 
@@ -721,9 +741,10 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
         grabbed = ReadTextChunk(stream->chars, MAX_STREAM_ROWS);
     }
 
-    if (grabbed == 0) {        
-        grabbed = settings.min_stream_length 
-            + rand() % (settings.max_stream_length - settings.min_stream_length);
+    if (grabbed == 0) {
+        int max_tail = settings.max_stream_length 
+            - settings.min_stream_length + 1;
+        grabbed = settings.min_stream_length + rand() % max_tail;
         for (size_t k = 0; k < grabbed; ++k) {
             int random_char_idx = rand() % settings.matrix_chars_count; 
             stream->chars[k].value = settings.matrix_chars[random_char_idx];
@@ -780,18 +801,22 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
 
 static void InitStreams(HDC hdc)
 {
-    int initial_count = 3;
+    int initial_count = 2;
     int shift = streams_initialized * settings.stream_count;
+    HWND hwnd = WindowFromDC(hdc);
+    HMONITOR current_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
 
     for (int i = shift; i < shift + initial_count; ++i) {
         if (!SpawnStream(hdc, &streams[i])) {
             streams[i].active = 0;
-            streams[i].spawn_delay = 1 + rand() % 20;
+            streams[i].spawn_delay = 1 + rand() % 41;
+            streams[i].monitor = current_monitor;
         }
     }
     for (int i = shift + initial_count; i < shift + settings.stream_count; ++i) {        
         streams[i].active = 0;
-        streams[i].spawn_delay = 1 + rand() % 200;        
+        streams[i].spawn_delay = 1 + rand() % 200;
+        streams[i].monitor = current_monitor;
     }
     ++streams_initialized;
 }
@@ -802,39 +827,40 @@ static void UpdateStreams(HDC hdc)
         InitStreams(hdc);
     }
 
+    HWND hwnd = WindowFromDC(hdc);
+    HMONITOR current_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+
     for (int i = 0; i < settings.stream_count * nmonitors; ++i) {
         Stream *stream = &streams[i];
+        
+        if(stream->monitor != current_monitor){
+            continue;
+        }
 
         if (!stream->active) {
             if (stream->spawn_delay > 0) {
                 --stream->spawn_delay;
             }
-
             if (stream->spawn_delay == 0) {
                 if (!SpawnStream(hdc, stream)) {
                     stream->spawn_delay = 5;
                 }
             }
-
             continue;
         }
+
+        
+
+        MONITORINFO mi = { 0 };
+        mi.cbSize = sizeof(MONITORINFO);
+        GetMonitorInfoW(current_monitor, &mi);
+        int screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
         // Calculate Y position of the bottom of the current head character
         int head_bottom_y = stream->start_y;
         for (int r = 0; r <= stream->head_row && r < stream->char_count; ++r) {
             head_bottom_y += stream->chars[r].height;
-        }
-
-        HWND hwnd = WindowFromDC(hdc);
-        HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        if(hMonitor != stream->monitor){
-            continue;
-        }
-
-        MONITORINFO mi = { 0 };
-        mi.cbSize = sizeof(MONITORINFO);
-        GetMonitorInfoW(hMonitor, &mi);
-        int screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        }        
 
         BOOL can_go_down = (head_bottom_y < screen_height) && 
                             (stream->head_row + 1 < stream->char_count);
@@ -1035,21 +1061,24 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
-            InitTextSource(settings.file_name);
-
-            if (!InitFontMetrics(hwnd)) {
-                CleanupTextSource();
-                return -1;
-            }
+            if(!resources_initialized){
+                InitTextSource(settings.file_name);
+                if (!InitFontMetrics(hwnd)) {
+                    CleanupTextSource();
+                    return -1;
+                }
+                resources_initialized = TRUE;
+            }          
 
             int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
             if (SetTimer(hwnd, 1, stream_speed, NULL) == 0) {
                 CleanupFont();
                 CleanupTextSource();
                 return -1;
-            }            
+            }
+            nwindows++;
             return 0; 
-        }       
+        }
         case WM_TIMER:
         {
             RECT client_rect;
@@ -1080,9 +1109,12 @@ static LRESULT CALLBACK WindowProc(
         case WM_DESTROY:
         {
             KillTimer(hwnd, 1);
-            CleanupBackbuffer();
-            CleanupFont();
-            CleanupTextSource();
+            if(--nwindows == 0) {
+                CleanupBackbuffer();
+                CleanupFont();
+                CleanupTextSource();
+                resources_initialized = FALSE;
+            }
             PostQuitMessage(0);
             return 0;
         }
@@ -1096,9 +1128,9 @@ static LRESULT CALLBACK WindowProc(
     }
 }
 
-BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
-    return TRUE;
-}
+// BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
+//     return TRUE;
+// }
 
 BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
     if(++nmonitors > MAX_MONITORS){
@@ -1154,17 +1186,9 @@ int WINAPI WinMain(
         return 1;
     }
 
-    #ifdef DEBUG_CONSOLE
-    AllocConsole();
-    FILE *console;
-    freopen_s(&console, "CONOUT$", "w", stdout);
-    #endif
-
-    
     LoadSettings();
     EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, (LPARAM)hInstance);
     
-
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
     {
