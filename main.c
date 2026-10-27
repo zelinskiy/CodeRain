@@ -75,7 +75,7 @@ typedef struct {
     int char_count;
     int max_width;
     int max_height;
-    HMONITOR *monitor;
+    HMONITOR monitor;
     StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
 
@@ -131,7 +131,7 @@ static Settings settings = {
     .color_b = 0,
 };
 
-static Stream streams[MAX_STREAM_COUNT];
+static Stream streams[MAX_STREAM_COUNT * MAX_MONITORS];
 static int streams_initialized = 0;
 static int nmonitors = 0;
 
@@ -311,7 +311,7 @@ static void NormalizeSettings(){
             break;
         } 
         settings.matrix_chars_count++;
-    }
+    }    
     if(settings.matrix_chars_count > MAX_MATRIX_CHARS) {
         settings.matrix_chars_count = MAX_MATRIX_CHARS;
     }
@@ -696,7 +696,7 @@ static BOOL CheckStreamCollision(const Stream *stream)
     int cand_left = stream->x;
     int cand_right = stream->x + stream->max_width;
 
-    for (int i = 0; i < settings.stream_count; ++i) {
+    for (int i = 0; i < settings.stream_count * nmonitors; ++i) {
         const Stream *other = &streams[i];
         if (other == stream || !other->active || other->monitor != stream->monitor) {
             continue;
@@ -747,7 +747,7 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
     stream->max_height = sum_h;
 
     HWND hwnd = WindowFromDC(hdc);
-    HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO mi = { 0 };
     mi.cbSize = sizeof(MONITORINFO);
     GetMonitorInfoW(hMonitor, &mi);
@@ -780,20 +780,19 @@ static BOOL SpawnStream(HDC hdc, Stream *stream)
 
 static void InitStreams(HDC hdc)
 {
-    int initial_count = settings.stream_count;
+    int initial_count = 3;
+    int shift = streams_initialized * settings.stream_count;
 
-    for (int i = 0; i < initial_count; ++i) {
+    for (int i = shift; i < shift + initial_count; ++i) {
         if (!SpawnStream(hdc, &streams[i])) {
             streams[i].active = 0;
             streams[i].spawn_delay = 1 + rand() % 20;
         }
     }
-
-    for (int i = initial_count; i < settings.stream_count; ++i) {
+    for (int i = shift + initial_count; i < shift + settings.stream_count; ++i) {        
         streams[i].active = 0;
-        streams[i].spawn_delay = 10 + rand() % 41;
+        streams[i].spawn_delay = 1 + rand() % 200;        
     }
-
     ++streams_initialized;
 }
 
@@ -803,7 +802,7 @@ static void UpdateStreams(HDC hdc)
         InitStreams(hdc);
     }
 
-    for (int i = 0; i < settings.stream_count; ++i) {
+    for (int i = 0; i < settings.stream_count * nmonitors; ++i) {
         Stream *stream = &streams[i];
 
         if (!stream->active) {
@@ -826,9 +825,15 @@ static void UpdateStreams(HDC hdc)
             head_bottom_y += stream->chars[r].height;
         }
 
+        HWND hwnd = WindowFromDC(hdc);
+        HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        if(hMonitor != stream->monitor){
+            continue;
+        }
+
         MONITORINFO mi = { 0 };
         mi.cbSize = sizeof(MONITORINFO);
-        GetMonitorInfoW(stream->monitor, &mi);
+        GetMonitorInfoW(hMonitor, &mi);
         int screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
         BOOL can_go_down = (head_bottom_y < screen_height) && 
@@ -872,7 +877,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
     RECT client_rect;
     GetClientRect(hwnd, &client_rect);
 
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
     
     const int width = client_rect.right;
     const int height = client_rect.bottom;
@@ -909,7 +914,7 @@ static void RenderFrame(HWND hwnd, HDC hdc, const RECT *paint_rect)
 
     SetBkMode(draw_dc, TRANSPARENT);
 
-    for (int i = 0; i < settings.stream_count; ++i) {
+    for (int i = 0; i < settings.stream_count * nmonitors; ++i) {
         const Stream *stream = &streams[i];
 
         if(stream->monitor != monitor){
@@ -1042,7 +1047,7 @@ static LRESULT CALLBACK WindowProc(
                 CleanupFont();
                 CleanupTextSource();
                 return -1;
-            }
+            }            
             return 0; 
         }       
         case WM_TIMER:
@@ -1096,6 +1101,10 @@ BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
 }
 
 BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
+    if(++nmonitors > MAX_MONITORS){
+        return FALSE;
+    }
+
     (void)hdcMonitor;
     (void)lprcMonitor;
     HINSTANCE hInstance = (HINSTANCE)dwData;
@@ -1121,7 +1130,6 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
             return FALSE;
         }
     }
-    ++nmonitors;
     return TRUE;
 }
 
@@ -1152,9 +1160,10 @@ int WINAPI WinMain(
     freopen_s(&console, "CONOUT$", "w", stdout);
     #endif
 
+    
     LoadSettings();
-
     EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, (LPARAM)hInstance);
+    
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
