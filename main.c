@@ -1050,6 +1050,8 @@ static LRESULT CALLBACK WindowProc(
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
+        case WM_KEYDOWN:
+        case WM_LBUTTONDOWN:
         case WM_DESTROY:
         {
             KillTimer(hwnd, 1);
@@ -1070,6 +1072,44 @@ static LRESULT CALLBACK WindowProc(
 }
 
 BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
+    return TRUE;
+}
+
+BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
+    (void)hdcMonitor;
+    (void)lprcMonitor;
+    HINSTANCE hInstance = (HINSTANCE)dwData;
+
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
+    if (GetMonitorInfoW(hMonitor, &mi)) {
+        int x = mi.rcMonitor.left;
+        int y = mi.rcMonitor.top;
+        int w = mi.rcMonitor.right - mi.rcMonitor.left;
+        int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+        CreateWindowExW(
+            WS_EX_TOPMOST,
+            L"MonitorWndClass",
+            L"",
+            WS_POPUP | WS_VISIBLE,
+            x, y, w, h,
+            NULL, NULL, hInstance, NULL
+        );
+
+        HWND hwnd = CreateWindowExW(
+            WS_EX_TOPMOST,
+            CLASS_NAME, L"CodeRain",
+            WS_POPUP | WS_VISIBLE,
+            x, y, w, h,
+            NULL, NULL, hInstance, NULL
+        );
+
+        if (hwnd == NULL)
+        {
+            return FALSE;
+        }
+    }
     return TRUE;
 }
 
@@ -1102,47 +1142,7 @@ int WINAPI WinMain(
 
     LoadSettings();
 
-    #ifdef FULLSCREEN
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-
-    HWND hwnd = CreateWindowExW(
-        0,
-        CLASS_NAME,
-        L"Matrix Screensaver",
-        WS_POPUP | WS_VISIBLE,
-        0, 
-        0,
-        screenWidth,
-        screenHeight,
-        NULL, 
-        NULL, 
-        hInstance, 
-        NULL
-    );
-    #else
-    HWND hwnd = CreateWindowExW(
-        0,
-        CLASS_NAME,
-        L"Matrix Screensaver",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        800,
-        600,
-        NULL,
-        NULL,
-        hInstance,
-        NULL
-    );
-    #endif
-
-    if (hwnd == NULL)
-    {
-        return 1;
-    }
-
-    ShowWindow(hwnd, SW_SHOW);    
+    EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, (LPARAM)hInstance);
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0)
