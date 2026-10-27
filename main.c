@@ -606,8 +606,7 @@ static BOOL EnsureBackbuffer(HDC reference_dc, int width, int height)
         return FALSE;
     }
 
-    HBITMAP old_bitmap =
-        (HBITMAP)SelectObject(new_dc, new_bitmap);
+    HBITMAP old_bitmap = (HBITMAP)SelectObject(new_dc, new_bitmap);
 
     if (old_bitmap == NULL || old_bitmap == (HBITMAP)HGDI_ERROR) {
         DeleteObject(new_bitmap);
