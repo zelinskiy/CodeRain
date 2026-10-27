@@ -23,6 +23,7 @@
 #define FALLBACK_WHITESPACE_WIDTH 12
 #define HORIZONTAL_STREAM_PADDING 10
 #define N_DIACRITICS 8
+#define MAX_MONITORS 16
 
 enum Language {
     EN,
@@ -74,8 +75,10 @@ typedef struct {
     int char_count;
     int max_width;
     int max_height;
+    HMONITOR *monitor;
     StreamCharacter chars[MAX_STREAM_ROWS];
 } Stream;
+
 
 static const wchar_t CLASS_NAME[] = L"Code Rain";
 
@@ -130,6 +133,7 @@ static Settings settings = {
 
 static Stream streams[MAX_STREAM_COUNT];
 static int streams_initialized = 0;
+static int nmonitors = 0;
 
 static HFONT stream_font = NULL;
 static FILE *text_source_file = NULL;
@@ -687,14 +691,14 @@ static RECT GetStreamRect(const Stream *stream)
     return r;
 }
 
-static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_width)
+static BOOL CheckStreamCollision(const Stream *stream)
 {
-    int cand_left = cand_x;
-    int cand_right = cand_x + cand_width;
+    int cand_left = stream->x;
+    int cand_right = stream->x + stream->max_width;
 
     for (int i = 0; i < settings.stream_count; ++i) {
         const Stream *other = &streams[i];
-        if (other == stream || !other->active) {
+        if (other == stream || !other->active || other->monitor != stream->monitor) {
             continue;
         }
 
@@ -708,7 +712,7 @@ static BOOL CheckStreamCollision(const Stream *stream, int cand_x, int cand_widt
     return FALSE;
 }
 
-static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_height)
+static BOOL SpawnStream(HDC hdc, Stream *stream)
 {
     memset(stream->chars, 0, sizeof(stream->chars));
 
@@ -742,20 +746,26 @@ static BOOL SpawnStream(HDC hdc, Stream *stream, int screen_width, int screen_he
     stream->max_width = max(max_w, 1);
     stream->max_height = sum_h;
 
+    HMONITOR hMonitor = MonitorFromDC(hdc, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
+    GetMonitorInfoW(hMonitor, &mi);
+    int screen_width = mi.rcMonitor.right - mi.rcMonitor.left;
+    int screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    stream->monitor = hMonitor;
+
     int max_x = max(1, screen_width - stream->max_width);
     int max_y = max(1, screen_height - 60);
 
     // Try several random positions across the screen before giving up
     for (int attempt = 0; attempt < 200; ++attempt) {
-        const int cand_x = rand() % max_x;
-        const int cand_y = rand() % max_y;
+        stream->x = rand() % max_x;
+        stream->start_y = rand() % max_y;
 
-        if (CheckStreamCollision(stream, cand_x, stream->max_width)) {
+        if (CheckStreamCollision(stream)) {
             continue;
         }
 
-        stream->x = cand_x;
-        stream->start_y = cand_y;
         stream->head_row = 0;
         stream->first_row = 0;
         stream->active = 1;
@@ -1008,7 +1018,6 @@ static LRESULT CALLBACK WindowProc(
     {
         case WM_CREATE:
         {
-            // LoadSettings();
             InitTextSource(settings.file_name);
 
             if (!InitFontMetrics(hwnd)) {
@@ -1017,7 +1026,6 @@ static LRESULT CALLBACK WindowProc(
             }
 
             int stream_speed = MAX_STREAM_SPEED - (settings.stream_speed % MAX_STREAM_SPEED);
-
             if (SetTimer(hwnd, 1, stream_speed, NULL) == 0) {
                 CleanupFont();
                 CleanupTextSource();
@@ -1110,6 +1118,7 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
             return FALSE;
         }
     }
+    ++nmonitors;
     return TRUE;
 }
 
