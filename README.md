@@ -1,6 +1,14 @@
 # Matrix Screensaver
 
-A minimal Matrix-style screensaver for Windows 11.
+(WIP) A minimal Matrix-style screensaver for Windows 11.
+
+## Build
+- `cl /std:c17 /W4 /TC /utf-8 main.c /Fe:coderain.scr /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib`
+
+## Installation
+- Copy `coderain.scr` to `C:\Windows\System32` (Requires admin privilege)
+- Make sure `settings.ini` and specified `file_source.txt` are in `C:\Users\$USER\AppData\Local\Coderain`
+- Set coderain as your screensaver via Control Panel
 
 ## TODO
 - find out why reading data from file peaks CPU usage (possibly fully read to RAM)

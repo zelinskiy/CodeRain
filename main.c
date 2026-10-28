@@ -7,11 +7,7 @@
 #include <wchar.h>
 #include <string.h>
 #include <time.h>
-#include <scrnsave.h>
-
-// Build:
-// cl /std:c17 /W4 /TC /utf-8 main.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
-// cl /std:c17 /W4 /TC /utf-8 main.c /Fecoderain.scr /link /SUBSYSTEM:WINDOWS scrnsavw.lib user32.lib gdi32.lib comctl32.lib
+#include <shlobj.h>
 
 #define MAX_STREAM_SPEED 1000
 #define MAX_STREAM_COUNT 200
@@ -21,6 +17,9 @@
 #define HORIZONTAL_STREAM_PADDING 10
 #define N_DIACRITICS 8
 #define MAX_MONITORS 16
+#define MAX_LOCAL_PATH 2048
+#define MAX_FILE_NAME 256
+#define LOCAL_DIR L"\\Coderain"
 
 enum Language {
     EN,
@@ -34,7 +33,7 @@ enum Language {
 
 typedef struct {
     enum Language lang;
-    wchar_t file_name[256];
+    wchar_t file_name[MAX_FILE_NAME];
     wchar_t font_familly[64];
     wchar_t matrix_chars[MAX_MATRIX_CHARS];
     int matrix_chars_count;
@@ -135,6 +134,7 @@ static BOOL resources_initialized = FALSE;
 static int nwindows = 0;
 static int nmonitors = 0;
 
+wchar_t local_path[MAX_LOCAL_PATH];
 static HFONT stream_font = NULL;
 static FILE *text_source_file = NULL;
 
@@ -146,6 +146,28 @@ static int backbuffer_width = 0;
 static int backbuffer_height = 0;
 
 
+static FILE *_OpenLocalTextFile(const wchar_t *filename, const wchar_t *mode)
+{
+    // +1 for slash
+    wchar_t file_path[MAX_LOCAL_PATH + MAX_FILE_NAME + 1];
+    swprintf_s(
+        file_path, 
+        MAX_LOCAL_PATH + MAX_FILE_NAME + 1, 
+        L"%s\\%s", 
+        local_path, 
+        filename
+    );    
+    FILE *fp = NULL;
+    if (_wfopen_s(&fp, file_path, mode) == 0 && fp != NULL) {
+        return fp;
+    }
+    return NULL;
+}
+
+static FILE *OpenLocalTextFile(const wchar_t *filename){
+    return _OpenLocalTextFile(filename, L"rb");
+}
+
 static void LogError(const char *msg) {
     if (!msg) return;
 
@@ -156,13 +178,20 @@ static void LogError(const char *msg) {
     char tstr[32];
     strftime(tstr, sizeof(tstr), "%Y-%m-%d %H:%M:%S", &tm);
 
-    FILE *fp;
-    if (fopen_s(&fp, "err.log", "a") == 0 && fp) {
-        size_t len = strlen(msg);
-        while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r')) len--;
-        fprintf(fp, "[%s] [ERROR] %.*s\n", tstr, (int)len, msg);
-        fclose(fp);
+    FILE *log_file = _OpenLocalTextFile(L"err.log", L"a");
+    if(log_file == NULL){
+        MessageBoxA(
+            NULL, 
+            msg, 
+            "Error", 
+            MB_OK
+        );
+        return;
     }
+    size_t len = strlen(msg);
+    while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r')) len--;
+    fprintf(log_file, "[%s] [ERROR] %.*s\n", tstr, (int)len, msg);
+    fclose(log_file);
 }
 
 static GLYPHMETRICS GetCharacterDimensions(HDC hdc, wchar_t ch)
@@ -256,15 +285,6 @@ static void MeasureStreamCharacter(HDC hdc, StreamCharacter *sc)
     AdHocCharFixes(sc);
 }
 
-static FILE *OpenTextFile(const wchar_t *filename)
-{
-    FILE *fp = NULL;
-    if (_wfopen_s(&fp, filename, L"rb") == 0 && fp != NULL) {
-        return fp;
-    }
-    return NULL;
-}
-
 #define TRY_LANG(l)\
 if (!strcmp(lang_code, #l)) {\
     settings.lang = l;\
@@ -339,10 +359,11 @@ static void NormalizeSettings(){
 }
 
 static void LoadSettings() {
-    FILE* file = OpenTextFile(L"settings.ini");
+
+    FILE* file = OpenLocalTextFile(L"settings.ini");
 
     if(file == NULL) {
-        LogError("Can't open settings file\n");
+        LogError("Can't open settings file\n");        
         return;
     }
 
@@ -390,9 +411,21 @@ static void LoadSettings() {
     NormalizeSettings();
 }
 
+static BOOL InitLocalPath()
+{
+    if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, local_path) == S_OK) {
+        int res = wcscat_s(local_path, MAX_LOCAL_PATH, LOCAL_DIR);
+        if (res == ERROR_SUCCESS || res == ERROR_ALREADY_EXISTS) {
+            return TRUE;
+        }
+    }
+    LogError("Can't init local path\n");
+    return FALSE;
+}
+
 static BOOL InitTextSource(const wchar_t *filename)
 {
-    text_source_file = OpenTextFile(filename);
+    text_source_file = OpenLocalTextFile(filename);
     return text_source_file != NULL;
 }
 
@@ -1127,10 +1160,6 @@ static LRESULT CALLBACK WindowProc(
     }
 }
 
-// BOOL WINAPI RegisterDialogClasses(HANDLE hInst) {
-//     return TRUE;
-// }
-
 BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
     if(++nmonitors > MAX_MONITORS){
         return FALSE;
@@ -1174,6 +1203,25 @@ int WINAPI WinMain(
     (void)lpCmdLine;
     (void)nCmdShow;
 
+    char screensaver_mode = '\0';
+    if (__argc > 1) {
+        screensaver_mode = __argv[1][1];
+    }
+
+    if (screensaver_mode == 'c' || screensaver_mode == 'C') {
+        MessageBoxW(
+            NULL, 
+            L"Please edit settings.ini to configure.", 
+            L"Warning", 
+            MB_OK
+        );
+        return 0;
+    }
+    if (screensaver_mode == 'p' || screensaver_mode == 'P') {
+        // No preview to keep things simple
+        return 0; 
+    }
+
     WNDCLASSW wc = { 0 };
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
@@ -1185,7 +1233,9 @@ int WINAPI WinMain(
         return 1;
     }
 
+    InitLocalPath();
     LoadSettings();
+    
     EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, (LPARAM)hInstance);
     
     MSG msg;
