@@ -29,6 +29,7 @@ enum Language {
     JP,
     CSL,
     AKK,
+    DE,
 };
 
 typedef struct {
@@ -80,6 +81,7 @@ static const wchar_t CLASS_NAME[] = L"Code Rain";
 
 static const wchar_t FALLBACK_MATRIX_CHARS[] = L"0";
 static const wchar_t EN_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const wchar_t DE_MATRIX_CHARS[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜẞ";
 static const wchar_t LA_MATRIX_CHARS[] = L"ABCDEFGHILMNOPQRSTVX";
 static const wchar_t GR_MATRIX_CHARS[] = L"ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 static const wchar_t RU_MATRIX_CHARS[] = L"АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ";
@@ -305,6 +307,7 @@ static void SetLanguage(const char *lang_code) {
     TRY_LANG(JP);
     TRY_LANG(CSL);
     TRY_LANG(AKK);
+    TRY_LANG(DE);
     char err_msg[64];
     snprintf(err_msg, sizeof(err_msg), "Unknown language code: %s", lang_code);
     LogError(err_msg);
